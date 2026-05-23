@@ -75,6 +75,17 @@ class EngineDecision:
         """Backwards-compatible alias for ``move_id`` (checkers' name)."""
         return self.move_id
 
+    @property
+    def score(self) -> int | None:
+        """The selected probe's cartridge-supplied integer score, or None.
+
+        Read off :attr:`MoveProbe.score` when a probe was selected; the
+        score's interpretation is cartridge-defined (typically a static
+        evaluation in centipawn-scale units). ``None`` for a null
+        decision (terminal position).
+        """
+        return None if self.selected is None else self.selected.score
+
 
 @dataclass(frozen=True)
 class EngineAnalysis:

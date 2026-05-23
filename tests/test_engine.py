@@ -186,3 +186,17 @@ def test_move_pdn_alias_on_decision() -> None:
     cartridge: Cartridge = _StubCartridge(probes)
     analysis = analyze(object(), cartridge=cartridge)
     assert analysis.decision.move_pdn == "11-15"
+
+
+def test_decision_score_reads_selected_probe_score() -> None:
+    """``EngineDecision.score`` is the selected probe's ``MoveProbe.score``."""
+    probes = (MoveProbe(move_id="m1", score=42),)
+    cartridge: Cartridge = _StubCartridge(probes)
+    analysis = analyze(object(), cartridge=cartridge)
+    assert analysis.decision.score == 42
+
+
+def test_decision_score_none_for_terminal() -> None:
+    cartridge: Cartridge = _StubCartridge(probes=())
+    analysis = analyze(object(), cartridge=cartridge)
+    assert analysis.decision.score is None

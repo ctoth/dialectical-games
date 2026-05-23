@@ -39,7 +39,9 @@ class SearchBackend(Protocol):
     unlimited); a backend that does not respect a deadline may ignore it.
     """
 
-    name: str
+    @property
+    def name(self) -> str:
+        ...
 
     def run(
         self,
