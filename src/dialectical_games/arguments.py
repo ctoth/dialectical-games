@@ -283,6 +283,117 @@ def _heuristic_evidence(label: str):  # noqa: ANN202 — ArgumentEvidence | None
     return evidence
 
 
+def _build_graded_graph_internal(
+    probes: list[MoveProbe],
+    survivors: frozenset[str],
+    policy: GradedPolicy,
+) -> tuple[BipolarOpinionGraph, dict[str, str]]:
+    """Construct the graded :class:`BipolarOpinionGraph` and the move-node map.
+
+    Shared core of :func:`build_graded_layer` (returns the resolved
+    ranking dict) and :func:`build_graded_graph` (returns the
+    :class:`BipolarOpinionGraph` itself). Builds one ``move:`` node per
+    surviving move and one ``wit:`` leaf per HEURISTIC witness, with
+    support / attack edges keyed by edge-trust.
+
+    The caller filters by ``survivors`` and screens ``policy is None`` /
+    empty cases before invoking this helper.
+    """
+    arguments: set[str] = set()
+    intrinsic: dict[str, Opinion] = {}
+    supports: set[tuple[str, str]] = set()
+    attacks: set[tuple[str, str]] = set()
+    edge_opinions: dict[tuple[str, str], Opinion] = {}
+    move_node_by_id: dict[str, str] = {}
+
+    edge_trust = policy.edge_trust
+
+    for probe in probes:
+        if probe.move_id not in survivors:
+            continue
+        move_id = _move_arg(probe.move_id)
+        move_node_by_id[probe.move_id] = move_id
+        arguments.add(move_id)
+        intrinsic[move_id] = Opinion.vacuous(policy.move_base_rate(probe))
+
+        for label in probe.reasons:
+            evidence = _heuristic_evidence(label)
+            if evidence is None:
+                continue
+            wit_id = _witness_arg_id(probe.move_id, label)
+            arguments.add(wit_id)
+            intrinsic[wit_id] = policy.witness_opinion(
+                probe=probe, label=label, magnitude=evidence.magnitude
+            )
+            edge = (wit_id, move_id)
+            supports.add(edge)
+            edge_opinions[edge] = edge_trust
+
+        for label in probe.objections:
+            evidence = _heuristic_evidence(label)
+            if evidence is None:
+                continue
+            wit_id = _witness_arg_id(probe.move_id, label)
+            arguments.add(wit_id)
+            intrinsic[wit_id] = policy.witness_opinion(
+                probe=probe, label=label, magnitude=evidence.magnitude
+            )
+            edge = (wit_id, move_id)
+            attacks.add(edge)
+            edge_opinions[edge] = edge_trust
+
+    graph = BipolarOpinionGraph(
+        arguments=frozenset(arguments),
+        intrinsic=intrinsic,
+        supports=frozenset(supports),
+        attacks=frozenset(attacks),
+        edge_opinions=edge_opinions,
+    )
+    return graph, move_node_by_id
+
+
+def build_graded_graph(
+    probes: list[MoveProbe],
+    survivors: frozenset[str],
+    policy: GradedPolicy | None,
+) -> BipolarOpinionGraph:
+    """Build the opinion-valued graded :class:`BipolarOpinionGraph` directly.
+
+    The graded layer's underlying :class:`doxa.BipolarOpinionGraph` —
+    sibling to :func:`build_graded_layer`, which returns the *resolved*
+    ranking dict. Callers that need the graph itself (sensitivity analysis,
+    perturbation studies — e.g. the bstar search's S-D4 reply ordering)
+    use this entry point; callers that need the resolved per-move
+    expectations use :func:`build_graded_layer`.
+
+    Same structure as :func:`build_graded_layer`: one ``move:{move_id}``
+    node per surviving move, one ``wit:{move_id}:{label}`` leaf per
+    HEURISTIC witness, support / attack edges keyed by edge-trust.
+
+    Returns the empty :class:`BipolarOpinionGraph` when ``policy is None``
+    or when no probe survives — symmetric to :func:`build_graded_layer`.
+    """
+    if policy is None:
+        return BipolarOpinionGraph(
+            arguments=frozenset(),
+            intrinsic={},
+            supports=frozenset(),
+            attacks=frozenset(),
+            edge_opinions={},
+        )
+    survivor_probes = [p for p in probes if p.move_id in survivors]
+    if not survivor_probes:
+        return BipolarOpinionGraph(
+            arguments=frozenset(),
+            intrinsic={},
+            supports=frozenset(),
+            attacks=frozenset(),
+            edge_opinions={},
+        )
+    graph, _ = _build_graded_graph_internal(survivor_probes, survivors, policy)
+    return graph
+
+
 def build_graded_layer(
     probes: list[MoveProbe],
     survivors: frozenset[str],
@@ -290,24 +401,18 @@ def build_graded_layer(
 ) -> dict[str, Any]:
     """Build the opinion-valued graded layer over the crisp survivors.
 
-    Builds a :class:`doxa.BipolarOpinionGraph` over ``survivors`` only and
-    resolves it with ``doxa.evaluate``:
+    Returns the resolved ranking — a dict keyed by ``"move_opinions"``,
+    ``"move_scores"``, ``"opinions"``, ``"arguments"``, ``"supports"``,
+    ``"attacks"``. The graph itself (the :class:`doxa.BipolarOpinionGraph`
+    before :func:`doxa.evaluate`) is the sibling :func:`build_graded_graph`.
 
-    * **move nodes** — one ``move:{move_id}`` per move id in ``survivors``,
-      with ``intrinsic = Opinion.vacuous(a)`` where ``a`` is the policy's
-      ``move_base_rate(probe)``. A move with no HEURISTIC witness resolves
-      to ``expectation() == a`` exactly.
-
-    * **witness leaf nodes** — one ``wit:{move_id}:{label}`` per HEURISTIC
-      witness (pro-reason or objection) on a surviving move, with the
-      policy's ``witness_opinion(probe=, label=, magnitude=)`` as the
-      intrinsic. FACT witnesses do not enter — they are the crisp layer's
-      business.
-
-    * **``supports``** — a ``(witness, move)`` edge per HEURISTIC pro-reason.
-      **``attacks``** — a ``(witness, move)`` edge per HEURISTIC objection.
-
-    * **``edge_opinions``** — every edge carries ``policy.edge_trust``.
+    Each surviving move becomes a ``move:{move_id}`` node with intrinsic
+    ``Opinion.vacuous(policy.move_base_rate(probe))``. Each HEURISTIC
+    witness on a surviving move becomes a ``wit:{move_id}:{label}`` leaf
+    with the policy's ``witness_opinion(...)`` as intrinsic — support edge
+    for a pro-reason, attack edge for an objection — every edge carrying
+    ``policy.edge_trust``. ``doxa.evaluate`` resolves the graph; each
+    move's resolved opinion is its ``Opinion.expectation()`` strength.
 
     ``policy`` may be ``None`` only when the caller has decided the graded
     layer is unused (a board-free unit test or a degenerate empty-survivor
@@ -329,55 +434,8 @@ def build_graded_layer(
             "attacks": frozenset(),
         }
 
-    arguments: set[str] = set()
-    intrinsic: dict[str, Opinion] = {}
-    supports: set[tuple[str, str]] = set()
-    attacks: set[tuple[str, str]] = set()
-    edge_opinions: dict[tuple[str, str], Opinion] = {}
-    move_node_by_id: dict[str, str] = {}
-
-    edge_trust = policy.edge_trust
-
-    for probe in survivor_probes:
-        move_id = _move_arg(probe.move_id)
-        move_node_by_id[probe.move_id] = move_id
-        arguments.add(move_id)
-        intrinsic[move_id] = Opinion.vacuous(policy.move_base_rate(probe))
-
-        # HEURISTIC pro-reasons -> support edges from a witness leaf.
-        for label in probe.reasons:
-            evidence = _heuristic_evidence(label)
-            if evidence is None:
-                continue
-            wit_id = _witness_arg_id(probe.move_id, label)
-            arguments.add(wit_id)
-            intrinsic[wit_id] = policy.witness_opinion(
-                probe=probe, label=label, magnitude=evidence.magnitude
-            )
-            edge = (wit_id, move_id)
-            supports.add(edge)
-            edge_opinions[edge] = edge_trust
-
-        # HEURISTIC objections -> attack edges from a witness leaf.
-        for label in probe.objections:
-            evidence = _heuristic_evidence(label)
-            if evidence is None:
-                continue
-            wit_id = _witness_arg_id(probe.move_id, label)
-            arguments.add(wit_id)
-            intrinsic[wit_id] = policy.witness_opinion(
-                probe=probe, label=label, magnitude=evidence.magnitude
-            )
-            edge = (wit_id, move_id)
-            attacks.add(edge)
-            edge_opinions[edge] = edge_trust
-
-    graph = BipolarOpinionGraph(
-        arguments=frozenset(arguments),
-        intrinsic=intrinsic,
-        supports=frozenset(supports),
-        attacks=frozenset(attacks),
-        edge_opinions=edge_opinions,
+    graph, move_node_by_id = _build_graded_graph_internal(
+        survivor_probes, survivors, policy
     )
     opinions = evaluate(graph)
 
@@ -392,9 +450,9 @@ def build_graded_layer(
         "move_opinions": move_opinions,
         "move_scores": move_scores,
         "opinions": dict(opinions),
-        "arguments": frozenset(arguments),
-        "supports": frozenset(supports),
-        "attacks": frozenset(attacks),
+        "arguments": graph.arguments,
+        "supports": graph.supports,
+        "attacks": graph.attacks,
     }
 
 

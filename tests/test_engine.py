@@ -35,32 +35,20 @@ class _StubPolicy:
 class _StubCartridge:
     """A minimal :class:`Cartridge` returning a fixed probe set.
 
-    ``probes`` is the depth-0 probe set; ``select_idx`` is the index of
-    the probe the cartridge selector should return (or ``None`` to skip
-    selection — used by ``terminal_board`` tests).
+    The cartridge no longer carries a selector callback — the core
+    :func:`dialectical_games.decider.lexicographic_decide` is the
+    decider. The cartridge supplies only the probe set and the graded
+    policy.
     """
 
-    def __init__(
-        self, probes: tuple[MoveProbe, ...], select_idx: int = 0
-    ) -> None:
+    def __init__(self, probes: tuple[MoveProbe, ...]) -> None:
         self._probes = probes
-        self._select_idx = select_idx
 
     def probe_moves(self, board: object) -> tuple[MoveProbe, ...]:
         return self._probes
 
     def make_graded_policy(self, board: object) -> GradedPolicy:
         return _StubPolicy()
-
-    def select(
-        self,
-        probes: list[MoveProbe],
-        graph: RootArgumentGraph,
-        *,
-        board: object,
-        settings: EngineSettings,
-    ) -> MoveProbe:
-        return probes[self._select_idx]
 
 
 def test_analyze_terminal_position() -> None:
@@ -84,19 +72,34 @@ def test_analyze_terminal_position() -> None:
     assert invocations == []
 
 
-def test_analyze_picks_cartridge_selection() -> None:
+def test_analyze_picks_core_decider_selection() -> None:
+    """The orchestrator returns the core decider's choice on the probe set.
+
+    Two clean probes with no FACT pro / objection and ``child_eval == 0``
+    tie on FACT terms 1-4 and on the term-5 child_eval; the move-id
+    tiebreak picks the lexicographically smaller id (``m1``).
+    """
     probes = (MoveProbe(move_id="m1"), MoveProbe(move_id="m2"))
-    cartridge: Cartridge = _StubCartridge(probes, select_idx=1)
+    cartridge: Cartridge = _StubCartridge(probes)
+    analysis = analyze(object(), cartridge=cartridge)
+    assert analysis.decision.move_id == "m1"
+    assert analysis.decision.selected is probes[0]
+    assert analysis.probes == probes
+
+
+def test_analyze_picks_fact_winner() -> None:
+    """The core decider picks the move carrying the FACT terminal-win pro."""
+    losing = MoveProbe(move_id="m1")
+    winning = MoveProbe(move_id="m2", reasons=("pro:terminal_win",))
+    cartridge: Cartridge = _StubCartridge((losing, winning))
     analysis = analyze(object(), cartridge=cartridge)
     assert analysis.decision.move_id == "m2"
-    assert analysis.decision.selected is probes[1]
-    assert analysis.probes == probes
 
 
 def test_post_decision_hook_can_replace_selection() -> None:
     """A hook returning a different ``selected`` overrides the depth-0 choice."""
     probes = (MoveProbe(move_id="m1"), MoveProbe(move_id="m2"))
-    cartridge: Cartridge = _StubCartridge(probes, select_idx=0)
+    cartridge: Cartridge = _StubCartridge(probes)
 
     def hook(
         ctx: PostDecisionContext,
@@ -111,35 +114,30 @@ def test_post_decision_hook_can_replace_selection() -> None:
 
 
 def test_post_decision_hook_can_mutate_probes_and_redecide() -> None:
-    """A hook can append an objection and re-run selection via ``redecide``."""
+    """A hook can append an objection and re-run the core decider via ``redecide``."""
     probes = (
         MoveProbe(move_id="m1"),
         MoveProbe(move_id="m2"),
     )
-    cartridge: Cartridge = _StubCartridge(probes, select_idx=0)
+    cartridge: Cartridge = _StubCartridge(probes)
 
     def hook(
         ctx: PostDecisionContext,
         probes: tuple[MoveProbe, ...],
         selected: MoveProbe | None,
     ) -> PostDecisionResult:
-        # Add a FACT terminal-loss objection to m1 and re-decide.
+        # Add a FACT terminal-loss objection to m1 and re-decide. The
+        # crisp layer now eliminates m1; the core decider picks m2.
         assert selected is not None
-        attacked = replace(selected, objections=("obj:terminal_loss",))
+        attacked = replace(probes[0], objections=("obj:terminal_loss",))
         new_probes = (attacked, probes[1])
         new_selected = ctx.redecide(new_probes)
         return PostDecisionResult(probes=new_probes, selected=new_selected)
 
     analysis = analyze(object(), cartridge=cartridge, post_decision=hook)
-    # After the hook, m1 has a FACT objection — m2 becomes the only crisp
-    # survivor; the cartridge selector picks index 0 of the survivor list,
-    # which is m1 BEFORE we changed the survivor set. But the redecide
-    # rebuilds the graph and the new selection is over ``new_probes``,
-    # whose first index is the now-attacked m1; the cartridge still
-    # returns ``new_probes[0]`` because the StubCartridge selects by
-    # index, not by crisp survival. The test exercises the wiring — the
-    # specific value is the cartridge's choice on the new probe set.
-    assert analysis.decision.move_id in {"m1", "m2"}
+    # m1 carries an undefeated FACT objection and is eliminated; the core
+    # decider must return m2 — the only crisp survivor.
+    assert analysis.decision.move_id == "m2"
     assert analysis.probes == (
         MoveProbe(move_id="m1", objections=("obj:terminal_loss",)),
         probes[1],

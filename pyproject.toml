@@ -60,10 +60,13 @@ extraPaths = ["src"]
 testpaths = ["tests"]
 markers = [
     "unit: focused unit-level contract tests",
+    "property: property-based or metamorphic tests",
+    "differential: differential or oracle-comparison tests",
 ]
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.0",
     "pyright>=1.1.390",
     "pytest>=8.0",
     "pytest-timeout>=2.3",

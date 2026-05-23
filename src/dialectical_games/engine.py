@@ -1,24 +1,31 @@
-"""Game-agnostic engine orchestrator: probe -> graph -> choose (-> hook).
+"""Game-agnostic engine orchestrator: probe -> graph -> decide (-> hook).
 
 A thin orchestrator. The pipeline:
 
 1. ``cartridge.probe_moves(board)`` -> the depth-0 :class:`MoveProbe` set.
 2. :func:`build_root_argument_graph` (the generic crisp + graded layer)
    using ``cartridge.make_graded_policy(board)``.
-3. ``cartridge.select(probes, graph, board)`` -> the depth-0 chosen probe.
+3. :func:`dialectical_games.decider.lexicographic_decide` -> the depth-0
+   chosen probe. The single canonical lexicographic FACT-then-graded
+   decider — game-agnostic, board-free, evaluator-free (it reads the
+   cartridge-precomputed ``probe.child_eval`` / ``probe.contested``).
 4. (Optional) ``post_decision(context, probes, selected)`` -> a possibly-
    revised ``(probes, selected)``.
 
-The orchestrator owns the wiring; every game-specific decision lives behind
-the :class:`Cartridge` Protocol or the :class:`PostDecisionHook` callable.
+The orchestrator owns the wiring; every game-specific decision lives
+behind the :class:`Cartridge` Protocol or the :class:`PostDecisionHook`
+callable. The decider itself is a single core function, not a cartridge
+seam — Phase-2-continuation cycle 4 deleted the cartridge ``select``
+callback as part of the core/cartridge boundary cleanup.
+
 The orchestrator does NOT call a search backend directly — backends are a
 cartridge concern, invoked from the post-decision hook (Seam 3 +
 :class:`SearchBackend`).
 
 The hook MUST tolerate ``selected is None`` only by **not being called** —
 the orchestrator skips the hook when no probe was chosen (a terminal
-position). This is the single load-bearing invariant the hook implementations
-may rely on.
+position). This is the single load-bearing invariant the hook
+implementations may rely on.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from dialectical_games.arguments import (
     RootArgumentGraph,
     build_root_argument_graph,
 )
+from dialectical_games.decider import lexicographic_decide
 
 
 @dataclass(frozen=True)
@@ -41,8 +49,6 @@ class EngineSettings:
 
     Holds only the load-bearing fields the orchestrator itself reads:
 
-    * ``selector_mode`` — the cartridge selector's mode tag. The
-      cartridge interprets the value; the core forwards it as opaque.
     * ``search_backend`` — the cartridge's chosen post-decision backend
       name (the cartridge's :class:`SearchBackendRegistry` key). ``""``
       means no backend (the hook may still run on its own).
@@ -50,14 +56,14 @@ class EngineSettings:
       unlimited) the orchestrator threads into the post-decision context.
     * ``cartridge_settings`` — opaque cartridge-side settings carrier
       (the cartridge's own dataclass extending whatever fields its probe
-      layer / selector / hook needs). Threaded into the post-decision
-      context.
+      layer / hook needs). Threaded into the post-decision context.
 
     Cartridges that need richer per-engine configuration carry it on
-    ``cartridge_settings`` rather than fattening this dataclass.
+    ``cartridge_settings`` rather than fattening this dataclass. (The
+    pre-cycle-4 ``selector_mode`` field is gone — there is one canonical
+    core decider, no mode dial.)
     """
 
-    selector_mode: str = ""
     search_backend: str = ""
     deadline: float | None = None
     cartridge_settings: Any = None
@@ -147,9 +153,13 @@ PostDecisionHook = Callable[
 class Cartridge(Protocol):
     """The cartridge surface the orchestrator consumes.
 
-    Every game-specific behaviour the depth-0 path needs lives behind one
-    of these callables / methods. The orchestrator never imports a game
-    module directly.
+    The depth-0 game-specific behaviour the orchestrator needs lives
+    behind these two methods — the cartridge produces probes and the
+    cartridge supplies the graded policy. The orchestrator never imports
+    a game module directly. The move decider itself is the core's own
+    :func:`dialectical_games.decider.lexicographic_decide`; there is no
+    cartridge ``select`` callback (Phase-2-continuation cycle 4 deleted
+    it).
     """
 
     def probe_moves(self, board: Any) -> tuple[MoveProbe, ...]:
@@ -157,27 +167,13 @@ class Cartridge(Protocol):
 
         Each probe must populate ``move_id``, the witness fields, and the
         cartridge-precomputed graded-policy inputs (``child_eval``,
-        ``contested``).
+        ``contested``) — the latter are what the core decider's term-5
+        tiebreak reads (Phase-2 settlement 1).
         """
         ...
 
     def make_graded_policy(self, board: Any) -> GradedPolicy:
         """Construct the per-build :class:`GradedPolicy` bound to ``board``."""
-        ...
-
-    def select(
-        self,
-        probes: list[MoveProbe],
-        graph: RootArgumentGraph,
-        *,
-        board: Any,
-        settings: EngineSettings,
-    ) -> MoveProbe:
-        """Run the cartridge selector over the crisp survivors.
-
-        Returns the chosen probe; must be one of ``probes`` (the
-        cartridge selector ranks only the crisp survivors).
-        """
         ...
 
 
@@ -195,7 +191,7 @@ def analyze(
     1. ``cartridge.probe_moves(board)`` -> the depth-0 probes.
     2. :func:`build_root_argument_graph` with
        ``cartridge.make_graded_policy(board)``.
-    3. ``cartridge.select(probes, graph, board=, settings=)`` ->
+    3. :func:`dialectical_games.decider.lexicographic_decide` -> the
        initial chosen probe (skipped, with a null decision, on a
        terminal position).
     4. (Optional, only when a probe was selected)
@@ -218,26 +214,22 @@ def analyze(
             decision=EngineDecision(move_id="", selected=None),
         )
 
-    selected: MoveProbe | None = cartridge.select(
-        list(probes), graph, board=board, settings=settings
-    )
+    selected: MoveProbe | None = lexicographic_decide(probes, graph)
 
     if post_decision is not None and selected is not None:
 
         def _redecide(new_probes: tuple[MoveProbe, ...]) -> MoveProbe | None:
-            """Re-run the cartridge selector on a (possibly mutated) probe set.
+            """Re-run the core decider on a (possibly mutated) probe set.
 
             The redecide path rebuilds the argument graph against the
-            updated probe tuple so the selector sees a consistent crisp
+            updated probe tuple so the decider sees a consistent crisp
             layer. A hook that mutates probes (e.g. appends an objection)
             invokes this to obtain the new selection.
             """
             if not new_probes:
                 return None
             new_graph = build_root_argument_graph(list(new_probes), policy)
-            return cartridge.select(
-                list(new_probes), new_graph, board=board, settings=settings
-            )
+            return lexicographic_decide(new_probes, new_graph)
 
         context = PostDecisionContext(
             board=board,
