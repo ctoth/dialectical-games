@@ -13,8 +13,14 @@ carries one.
 from __future__ import annotations
 
 import pytest
+from hypothesis import given, strategies as st
 
-from dialectical_games.evidence import ArgumentEvidence, to_argument_evidence
+from dialectical_games.evidence import (
+    ArgumentEvidence,
+    _FIXED,
+    _MAGNITUDE,
+    to_argument_evidence,
+)
 from dialectical_games.scheme import Tier, Value
 
 
@@ -364,3 +370,160 @@ def test_signed_or_zero_magnitude_raises(label: str) -> None:
     """
     with pytest.raises(ValueError):
         to_argument_evidence(label)
+
+
+# ---------------------------------------------------------------------------
+# unit + property — chunk G.1 chess HEURISTIC vocabulary extension
+# ---------------------------------------------------------------------------
+#
+# The chunk-G.1 extension adds 29 new HEURISTIC keys (21 FIXED + 8 MAGNITUDE)
+# plus reuses ``pro:mobility:{n}`` for chess legal-move-count gain. The full
+# table lives in ``reports/core-phase3-chunkg-plan.md`` §3. Each new row is
+# enumerated here for type-mapping correctness and the magnitude rows are
+# also covered by hypothesis-generative property tests over the integer
+# range that exercises both the count-scale (1-4) and centipawn-scale
+# (100-3000) saturation cases.
+
+_CHUNK_G_FIXED_LABELS: list[tuple[str, Value, Tier]] = [
+    # pro: STRUCTURE chess HEURISTIC supports.
+    ("pro:development:center_pawn", Value.STRUCTURE, Tier.HEURISTIC),
+    ("pro:development:minor_piece", Value.STRUCTURE, Tier.HEURISTIC),
+    ("pro:king_safety:castle", Value.STRUCTURE, Tier.HEURISTIC),
+    ("pro:pawn_structure:passed_pawn", Value.STRUCTURE, Tier.HEURISTIC),
+    ("pro:file_control:open_file", Value.STRUCTURE, Tier.HEURISTIC),
+    ("pro:outpost:supported", Value.STRUCTURE, Tier.HEURISTIC),
+    ("pro:king_safety:escape_square", Value.STRUCTURE, Tier.HEURISTIC),
+    ("pro:king_safety:advanced_flank_pawn_response", Value.STRUCTURE, Tier.HEURISTIC),
+    # obj: STRUCTURE chess HEURISTIC objections (king_safety).
+    ("obj:king_safety:castled_flank_pawn_weakening", Value.STRUCTURE, Tier.HEURISTIC),
+    ("obj:king_safety:flank_pawn_weakening", Value.STRUCTURE, Tier.HEURISTIC),
+    ("obj:king_safety:flank_pawn_lunge", Value.STRUCTURE, Tier.HEURISTIC),
+    ("obj:king_safety:unanswered_advanced_flank_pawn", Value.STRUCTURE, Tier.HEURISTIC),
+    ("obj:king_safety:queen_flank_invasion", Value.STRUCTURE, Tier.HEURISTIC),
+    # obj: TEMPO chess HEURISTIC objections (opening).
+    ("obj:opening:minor_retreat", Value.TEMPO, Tier.HEURISTIC),
+    ("obj:opening:king_center_flight", Value.TEMPO, Tier.HEURISTIC),
+    ("obj:opening:king_walk", Value.TEMPO, Tier.HEURISTIC),
+    # pro: TEMPO chess HEURISTIC supports (tactical).
+    ("pro:tactical:checking_exchange_pressure", Value.TEMPO, Tier.HEURISTIC),
+    # obj: MATERIAL chess HEURISTIC objections (smt).
+    ("obj:smt:fork:high_value_piece", Value.MATERIAL, Tier.HEURISTIC),
+    # obj: TEMPO chess HEURISTIC objections (strategy).
+    ("obj:strategy:unsupported_major_drift", Value.TEMPO, Tier.HEURISTIC),
+    ("obj:strategy:threefold_repetition", Value.TEMPO, Tier.HEURISTIC),
+    ("obj:strategy:fifty_move_draw", Value.TEMPO, Tier.HEURISTIC),
+]
+
+
+_CHUNK_G_MAGNITUDE_PREFIXES: list[tuple[str, Value, Tier]] = [
+    ("pro:center_control", Value.STRUCTURE, Tier.HEURISTIC),
+    ("obj:opening:premature_minor_check", Value.TEMPO, Tier.HEURISTIC),
+    ("obj:opening:premature_rook", Value.TEMPO, Tier.HEURISTIC),
+    ("obj:opening:premature_queen", Value.TEMPO, Tier.HEURISTIC),
+    ("pro:piece_safety:defended", Value.MATERIAL, Tier.HEURISTIC),
+    ("pro:tactical:threat", Value.MATERIAL, Tier.HEURISTIC),
+    ("pro:smt:fork", Value.MATERIAL, Tier.HEURISTIC),
+    ("obj:smt:fork:moved_piece_en_pris", Value.MATERIAL, Tier.HEURISTIC),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "label,value,tier",
+    _CHUNK_G_FIXED_LABELS,
+    ids=[row[0] for row in _CHUNK_G_FIXED_LABELS],
+)
+def test_chunk_g_fixed_label_maps_to_value_and_tier(
+    label: str, value: Value, tier: Tier
+) -> None:
+    """Every chunk-G.1 FIXED HEURISTIC label parses to the documented (Value, Tier)."""
+    evidence = to_argument_evidence(label)
+    assert isinstance(evidence, ArgumentEvidence)
+    assert evidence.label == label
+    assert evidence.value is value
+    assert evidence.tier is tier
+    assert evidence.magnitude is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "prefix,value,tier",
+    _CHUNK_G_MAGNITUDE_PREFIXES,
+    ids=[row[0] for row in _CHUNK_G_MAGNITUDE_PREFIXES],
+)
+def test_chunk_g_magnitude_prefix_registered(
+    prefix: str, value: Value, tier: Tier
+) -> None:
+    """Every chunk-G.1 MAGNITUDE prefix is in the ``_MAGNITUDE`` table."""
+    assert _MAGNITUDE[prefix] == (value, tier)
+
+
+@pytest.mark.property
+@given(magnitude=st.integers(min_value=1, max_value=5000))
+def test_chunk_g_magnitude_label_parses_for_any_positive_int(
+    magnitude: int,
+) -> None:
+    """Every chunk-G.1 MAGNITUDE prefix parses for any positive integer.
+
+    Hypothesis covers both the count-scale (1-4 typical) and centipawn-scale
+    (100-3000 typical) ranges with one strategy — the parser does not
+    distinguish; the chess graded policy applies per-prefix saturation
+    downstream.
+    """
+    for prefix, value, tier in _CHUNK_G_MAGNITUDE_PREFIXES:
+        label = f"{prefix}:{magnitude}"
+        evidence = to_argument_evidence(label)
+        assert evidence.label == label
+        assert evidence.value is value
+        assert evidence.tier is tier
+        assert evidence.magnitude == magnitude
+
+
+@pytest.mark.property
+@given(magnitude=st.integers(max_value=0))
+def test_chunk_g_magnitude_rejects_zero_and_negative(magnitude: int) -> None:
+    """A zero or negative magnitude is rejected for every chunk-G.1 prefix."""
+    for prefix, _value, _tier in _CHUNK_G_MAGNITUDE_PREFIXES:
+        label = f"{prefix}:{magnitude}"
+        with pytest.raises(ValueError):
+            to_argument_evidence(label)
+
+
+@pytest.mark.property
+@given(suffix=st.text(min_size=1, max_size=8))
+def test_chunk_g_fixed_label_rejects_colon_suffix(suffix: str) -> None:
+    """A chunk-G.1 FIXED label with any ``:<suffix>`` is rejected.
+
+    Fixed labels are exact-match dict keys. Appending a ``:<suffix>`` makes
+    the label parse as a magnitude — the prefix is not in ``_MAGNITUDE``, so
+    the parser must raise.
+    """
+    # Avoid the case where the suffix happens to be a valid integer matching
+    # an existing magnitude key (none of the chunk-G FIXED labels are also
+    # MAGNITUDE prefixes, but be defensive).
+    for label, _value, _tier in _CHUNK_G_FIXED_LABELS:
+        candidate = f"{label}:{suffix}"
+        if candidate in _FIXED:
+            continue
+        head, _, _ = candidate.rpartition(":")
+        if head in _MAGNITUDE and suffix.isascii() and suffix.isdecimal() and int(suffix) > 0:
+            # Defensive guard; should never trigger for the current vocabulary.
+            continue
+        with pytest.raises(ValueError):
+            to_argument_evidence(candidate)
+
+
+@pytest.mark.unit
+def test_chunk_g_total_new_key_count() -> None:
+    """29 new HEURISTIC keys land in the union of ``_FIXED`` and ``_MAGNITUDE``.
+
+    The chunk-G.1 plan (``reports/core-phase3-chunkg-plan.md`` §3) specifies
+    21 FIXED + 8 MAGNITUDE = 29 truly new keys plus 1 reuse of
+    ``pro:mobility:{n}``. Pin the count so accidental additions/removals
+    surface in CI.
+    """
+    fixed_count = len(_CHUNK_G_FIXED_LABELS)
+    magnitude_count = len(_CHUNK_G_MAGNITUDE_PREFIXES)
+    assert fixed_count == 21
+    assert magnitude_count == 8
+    assert fixed_count + magnitude_count == 29

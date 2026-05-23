@@ -41,6 +41,17 @@ The witness-vocabulary enrichment added the last seven HEURISTIC rows (the
 Tier A new witnesses plus the two cheap completions). ``pro:runaway`` is
 deferred — see ``witnesses.py``.
 
+Chunk G.1 (core Phase 3) adds the chess HEURISTIC vocabulary as additional
+HEURISTIC rows: ``pro:development:*``, ``pro:king_safety:*``,
+``obj:king_safety:*``, ``obj:opening:*``, ``pro:piece_safety:defended:{n}``,
+``pro:tactical:threat:{n}``, ``pro:tactical:checking_exchange_pressure``,
+``pro:smt:fork:{n}``, ``obj:smt:fork:*``, ``obj:strategy:*``,
+``pro:pawn_structure:passed_pawn``, ``pro:file_control:open_file``,
+``pro:outpost:supported``, ``pro:center_control:{n}``. The flat-with-role-
+prefix shape matches the existing checkers HEURISTIC rows; the chess
+emitter side translates its game-typed labels into these keys via
+``dialectical_chess.core_labels`` (see chunk G.1 plan).
+
 A HEURISTIC label is a positional judgement, not a resolver/terminal proof; the
 tier field is exactly the ``Bench-Capon_2003`` fact-as-highest-value bridge
 (design §4) — a FACT label outranks every HEURISTIC one. ``pro:formation`` is
@@ -133,6 +144,33 @@ _FIXED: dict[str, tuple[Value, Tier]] = {
     "pro:king_centralised": (Value.KING_COUNT, Tier.HEURISTIC),
     "obj:trapped_piece": (Value.STRUCTURE, Tier.HEURISTIC),
     "obj:weakens_back_structure": (Value.STRUCTURE, Tier.HEURISTIC),
+    # HEURISTIC-tier (chunk G.1 — chess HEURISTIC vocabulary extension).
+    # Flat with role prefix; second segment names the chess-specific concept
+    # (``development``, ``king_safety``, ``opening`` ...). See
+    # ``reports/core-phase3-chunkg-plan.md`` §2-3 for the namespacing rationale
+    # and the per-row Value mapping. All chunk-G.1 rows are HEURISTIC; the
+    # FACT-route fix for QUEEN_FLANK_INVASION is deferred to a follow-up cycle.
+    "pro:development:center_pawn": (Value.STRUCTURE, Tier.HEURISTIC),
+    "pro:development:minor_piece": (Value.STRUCTURE, Tier.HEURISTIC),
+    "pro:king_safety:castle": (Value.STRUCTURE, Tier.HEURISTIC),
+    "pro:pawn_structure:passed_pawn": (Value.STRUCTURE, Tier.HEURISTIC),
+    "pro:file_control:open_file": (Value.STRUCTURE, Tier.HEURISTIC),
+    "pro:outpost:supported": (Value.STRUCTURE, Tier.HEURISTIC),
+    "pro:king_safety:escape_square": (Value.STRUCTURE, Tier.HEURISTIC),
+    "pro:king_safety:advanced_flank_pawn_response": (Value.STRUCTURE, Tier.HEURISTIC),
+    "obj:king_safety:castled_flank_pawn_weakening": (Value.STRUCTURE, Tier.HEURISTIC),
+    "obj:king_safety:flank_pawn_weakening": (Value.STRUCTURE, Tier.HEURISTIC),
+    "obj:king_safety:flank_pawn_lunge": (Value.STRUCTURE, Tier.HEURISTIC),
+    "obj:king_safety:unanswered_advanced_flank_pawn": (Value.STRUCTURE, Tier.HEURISTIC),
+    "obj:king_safety:queen_flank_invasion": (Value.STRUCTURE, Tier.HEURISTIC),
+    "obj:opening:minor_retreat": (Value.TEMPO, Tier.HEURISTIC),
+    "obj:opening:king_center_flight": (Value.TEMPO, Tier.HEURISTIC),
+    "obj:opening:king_walk": (Value.TEMPO, Tier.HEURISTIC),
+    "pro:tactical:checking_exchange_pressure": (Value.TEMPO, Tier.HEURISTIC),
+    "obj:smt:fork:high_value_piece": (Value.MATERIAL, Tier.HEURISTIC),
+    "obj:strategy:unsupported_major_drift": (Value.TEMPO, Tier.HEURISTIC),
+    "obj:strategy:threefold_repetition": (Value.TEMPO, Tier.HEURISTIC),
+    "obj:strategy:fifty_move_draw": (Value.TEMPO, Tier.HEURISTIC),
 }
 
 _MAGNITUDE: dict[str, tuple[Value, Tier]] = {
@@ -144,7 +182,9 @@ _MAGNITUDE: dict[str, tuple[Value, Tier]] = {
     "reply:material": (Value.MATERIAL, Tier.FACT),
     # HEURISTIC-tier (design §5, Phase 4) — magnitude is a positional COUNT,
     # not material (``pro:center`` central-square occupation gained,
-    # ``pro:mobility`` legal-move-count gained).
+    # ``pro:mobility`` legal-move-count gained). ``pro:mobility:{n}`` is
+    # shared between checkers (legal-move-count gained) and chess (legal-move
+    # count gain) — see chunk G.1 plan §3 reuse row.
     "pro:center": (Value.STRUCTURE, Tier.HEURISTIC),
     "pro:mobility": (Value.MOBILITY, Tier.HEURISTIC),
     # HEURISTIC-tier (witness-vocabulary enrichment) — magnitude is a
@@ -152,6 +192,20 @@ _MAGNITUDE: dict[str, tuple[Value, Tier]] = {
     # drop, ``obj:cedes_centre`` the central-square occupation lost).
     "pro:cramps_opponent": (Value.MOBILITY, Tier.HEURISTIC),
     "obj:cedes_centre": (Value.STRUCTURE, Tier.HEURISTIC),
+    # HEURISTIC-tier (chunk G.1 — chess HEURISTIC vocabulary extension).
+    # Two magnitude scales coexist now: count-scale (1-4 typical) and
+    # centipawn-scale (100-3000 typical). The parser does not distinguish —
+    # both are positive integers — but the chess graded policy applies
+    # per-prefix saturation. See ``reports/core-phase3-chunkg-plan.md`` §5 /
+    # §7-A for the dual-scale risk and the chess-side saturation tuning.
+    "pro:center_control": (Value.STRUCTURE, Tier.HEURISTIC),
+    "obj:opening:premature_minor_check": (Value.TEMPO, Tier.HEURISTIC),
+    "obj:opening:premature_rook": (Value.TEMPO, Tier.HEURISTIC),
+    "obj:opening:premature_queen": (Value.TEMPO, Tier.HEURISTIC),
+    "pro:piece_safety:defended": (Value.MATERIAL, Tier.HEURISTIC),
+    "pro:tactical:threat": (Value.MATERIAL, Tier.HEURISTIC),
+    "pro:smt:fork": (Value.MATERIAL, Tier.HEURISTIC),
+    "obj:smt:fork:moved_piece_en_pris": (Value.MATERIAL, Tier.HEURISTIC),
 }
 
 # ``pro:formation:{kind}`` — the closed set of named formations (design §5
