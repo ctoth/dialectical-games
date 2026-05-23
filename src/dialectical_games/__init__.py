@@ -19,8 +19,24 @@ Phase 2 surface:
   :class:`~dialectical_games.loss_mining.LossTurningPoint`,
   :func:`~dialectical_games.loss_mining.mine_turning_point`,
   :func:`~dialectical_games.loss_mining.mine_losses`.
+- Crisp + graded argument graph — :class:`~dialectical_games.arguments.MoveProbe`,
+  :class:`~dialectical_games.arguments.RootArgumentGraph`,
+  :class:`~dialectical_games.arguments.GradedPolicy`,
+  :func:`~dialectical_games.arguments.build_root_argument_graph`,
+  :func:`~dialectical_games.arguments.build_graded_layer`,
+  :func:`~dialectical_games.arguments.obj_arg_id`,
+  :func:`~dialectical_games.arguments.reply_arg_id`.
 """
 
+from dialectical_games.arguments import (
+    GradedPolicy,
+    MoveProbe,
+    RootArgumentGraph,
+    build_graded_layer,
+    build_root_argument_graph,
+    obj_arg_id,
+    reply_arg_id,
+)
 from dialectical_games.board import Board, Move
 from dialectical_games.evidence import (
     ArgumentEvidence,
@@ -42,11 +58,18 @@ __all__ = [
     "ForcedLoss",
     "ForcedLossResolver",
     "GameResult",
+    "GradedPolicy",
     "LossTurningPoint",
     "Move",
+    "MoveProbe",
+    "RootArgumentGraph",
     "Tier",
     "Value",
+    "build_graded_layer",
+    "build_root_argument_graph",
     "mine_losses",
     "mine_turning_point",
+    "obj_arg_id",
+    "reply_arg_id",
     "to_argument_evidence",
 ]
