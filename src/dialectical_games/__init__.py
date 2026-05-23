@@ -38,6 +38,17 @@ from dialectical_games.arguments import (
     reply_arg_id,
 )
 from dialectical_games.board import Board, Move
+from dialectical_games.engine import (
+    Cartridge,
+    EngineAnalysis,
+    EngineDecision,
+    EngineSettings,
+    PostDecisionContext,
+    PostDecisionHook,
+    PostDecisionResult,
+    ReDecide,
+    analyze,
+)
 from dialectical_games.evidence import (
     ArgumentEvidence,
     to_argument_evidence,
@@ -50,11 +61,19 @@ from dialectical_games.loss_mining import (
     mine_turning_point,
 )
 from dialectical_games.scheme import CriticalQuestion, Tier, Value
+from dialectical_games.search_backend import (
+    SearchBackend,
+    SearchBackendRegistry,
+)
 
 __all__ = [
     "ArgumentEvidence",
     "Board",
+    "Cartridge",
     "CriticalQuestion",
+    "EngineAnalysis",
+    "EngineDecision",
+    "EngineSettings",
     "ForcedLoss",
     "ForcedLossResolver",
     "GameResult",
@@ -62,9 +81,16 @@ __all__ = [
     "LossTurningPoint",
     "Move",
     "MoveProbe",
+    "PostDecisionContext",
+    "PostDecisionHook",
+    "PostDecisionResult",
+    "ReDecide",
     "RootArgumentGraph",
+    "SearchBackend",
+    "SearchBackendRegistry",
     "Tier",
     "Value",
+    "analyze",
     "build_graded_layer",
     "build_root_argument_graph",
     "mine_losses",
