@@ -63,7 +63,7 @@ This module imports only ``dialectical_games``, the stdlib, ``doxa`` and
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
 from argumentation.dung import ArgumentationFramework, grounded_extension
 from doxa import BipolarOpinionGraph, Opinion, evaluate
@@ -174,7 +174,28 @@ class GradedPolicy(Protocol):
     game phase can be cached once), then passes it into the builder. The
     policy reads what it needs from each :class:`MoveProbe` (``child_eval``,
     ``contested``, the witness labels themselves).
+
+    The builder calls :meth:`with_probes` once at entry with the survivor
+    probe sequence; a cartridge that needs per-position aggregates (a CDF
+    over sibling magnitudes, a histogram of child evaluations) builds them
+    there and returns a new policy carrying the cache. The default
+    implementation returns ``self`` — a cartridge with no per-position
+    aggregate needs nothing.
     """
+
+    def with_probes(self, probes: Sequence[MoveProbe]) -> "GradedPolicy":
+        """Return a policy bound to ``probes`` (chunk H').
+
+        Called once by :func:`_build_graded_graph_internal` at entry, before
+        iterating. A cartridge that needs to build per-position aggregates
+        (e.g. a per-label-prefix CDF over sibling magnitudes, a per-position
+        CDF over sibling child evaluations) does so here and returns a NEW
+        policy carrying the cache (Protocol immutability — never mutate
+        ``self``). The default implementation returns ``self``.
+
+        The return value must still satisfy :class:`GradedPolicy`.
+        """
+        return self
 
     def move_base_rate(self, probe: MoveProbe) -> float:
         """The move node's vacuous-opinion base rate ``a``.
@@ -305,6 +326,14 @@ def _build_graded_graph_internal(
     attacks: set[tuple[str, str]] = set()
     edge_opinions: dict[tuple[str, str], Opinion] = {}
     move_node_by_id: dict[str, str] = {}
+
+    # Chunk H': bind the policy to the survivor probes ONCE before iterating.
+    # A cartridge that needs per-position aggregates (e.g. a per-label-prefix
+    # CDF over sibling magnitudes, a per-position CDF over sibling child
+    # evaluations) builds them here and returns a NEW policy carrying the
+    # cache. The default Protocol implementation returns ``self``.
+    survivor_probes_seq = [p for p in probes if p.move_id in survivors]
+    policy = policy.with_probes(survivor_probes_seq)
 
     edge_trust = policy.edge_trust
 

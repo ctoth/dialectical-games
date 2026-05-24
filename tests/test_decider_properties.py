@@ -46,6 +46,10 @@ from dialectical_games.decider import fact_only_key, lexicographic_decide
 
 
 class _StubPolicy:
+    def with_probes(self, probes: object) -> "_StubPolicy":
+        # Chunk H': no per-position aggregates; identity.
+        return self
+
     @property
     def edge_trust(self) -> Opinion:
         return Opinion.dogmatic_true(0.5)

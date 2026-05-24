@@ -39,6 +39,11 @@ class _StubPolicy:
     a fixed-belief witness opinion, and constant dogmatic edge trust.
     """
 
+    def with_probes(self, probes: object) -> "_StubPolicy":
+        # Chunk H': no per-position aggregates; identity. ``probes`` is
+        # ignored — the stub has no cache to build.
+        return self
+
     @property
     def edge_trust(self) -> Opinion:
         return Opinion.dogmatic_true(0.5)
@@ -256,3 +261,74 @@ def test_move_probe_new_fields_default_to_zero_and_false() -> None:
     probe = MoveProbe(move_id="m1")
     assert probe.child_eval == 0
     assert probe.contested is False
+
+
+# ---------------------------------------------------------------------------
+# Chunk H': GradedPolicy.with_probes
+# ---------------------------------------------------------------------------
+
+
+def test_with_probes_default_returns_equivalent_policy() -> None:
+    """A policy with no per-position aggregate to build returns an
+    equivalent :class:`GradedPolicy` from :meth:`with_probes`.
+
+    The stub policy has no cache to build, so ``with_probes`` is the
+    identity. The returned object must still satisfy the Protocol.
+    """
+    probes = (MoveProbe(move_id="m1", child_eval=0),)
+    bound = _POLICY.with_probes(probes)
+    # Same protocol surface — every method/property still callable.
+    assert bound.edge_trust == _POLICY.edge_trust
+    assert bound.move_base_rate(probes[0]) == _POLICY.move_base_rate(probes[0])
+    op = bound.witness_opinion(
+        probe=probes[0], label="pro:material:100", magnitude=100
+    )
+    assert op.b + op.d + op.u == 1.0
+
+
+def test_with_probes_called_by_builder_once_at_entry() -> None:
+    """``_build_graded_graph_internal`` calls ``policy.with_probes`` once
+    at entry with the survivor probes (chunk H' D1)."""
+
+    class _CountingPolicy:
+        def __init__(self) -> None:
+            self.with_probes_calls: list[tuple[MoveProbe, ...]] = []
+
+        def with_probes(self, probes: object) -> "_CountingPolicy":
+            self.with_probes_calls.append(tuple(probes))  # type: ignore[arg-type]
+            return self
+
+        @property
+        def edge_trust(self) -> Opinion:
+            return Opinion.dogmatic_true(0.5)
+
+        def move_base_rate(self, probe: MoveProbe) -> float:
+            return 0.5
+
+        def witness_opinion(
+            self, *, probe: MoveProbe, label: str, magnitude: int | None
+        ) -> Opinion:
+            return Opinion(0.55, 0.15, 0.30, 0.5)
+
+    policy = _CountingPolicy()
+    probes = [
+        MoveProbe(move_id="m1", reasons=("pro:material:100",)),
+        MoveProbe(move_id="m2", reasons=("pro:material:200",)),
+    ]
+    build_graded_layer(probes, frozenset({"m1", "m2"}), policy)
+    assert len(policy.with_probes_calls) == 1
+    # Survivor probes only — both moves survive in this fixture.
+    assert {p.move_id for p in policy.with_probes_calls[0]} == {"m1", "m2"}
+
+
+def test_with_probes_return_type_satisfies_protocol() -> None:
+    """The object ``with_probes`` returns has the full Protocol surface."""
+    probes: tuple[MoveProbe, ...] = (MoveProbe(move_id="m1"),)
+    bound: GradedPolicy = _POLICY.with_probes(probes)
+    # All three Protocol entrypoints are callable on the return value.
+    assert isinstance(bound.edge_trust, Opinion)
+    assert 0.0 < bound.move_base_rate(probes[0]) < 1.0
+    op = bound.witness_opinion(
+        probe=probes[0], label="pro:material:100", magnitude=100
+    )
+    assert isinstance(op, Opinion)

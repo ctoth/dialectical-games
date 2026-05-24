@@ -19,6 +19,10 @@ from dialectical_games.engine import (
 class _StubPolicy:
     """A minimal :class:`GradedPolicy` for the orchestrator tests."""
 
+    def with_probes(self, probes: object) -> "_StubPolicy":
+        # Chunk H': no per-position aggregates; identity.
+        return self
+
     @property
     def edge_trust(self) -> Opinion:
         return Opinion.dogmatic_true(0.5)
