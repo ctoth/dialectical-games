@@ -14,8 +14,11 @@ the dialectical argumentation pipeline:
   whose nodes are the surviving ``move:`` arguments plus one leaf node per
   HEURISTIC witness on those survivors. ``doxa.evaluate`` resolves it bottom-up
   to a per-argument Jøsang :class:`doxa.Opinion`. Each move's resolved opinion
-  accrues its HEURISTIC supporters (pro-reasons) and attackers (objections)
-  under doxa's CCF operator. The per-move ``Opinion`` and its
+  accrues its HEURISTIC supporters (pro-reasons) and attackers (objections /
+  heuristic reply attacks) under doxa's CCF operator. HEURISTIC defenses are
+  witness nodes that attack only the answered objection / reply witness, so
+  suppression is represented in the graph instead of being rechannelled as
+  pro support. The per-move ``Opinion`` and its
   ``expectation()`` strength are exposed on :attr:`RootArgumentGraph.ranking`.
 
 The graded layer **only ranks** — it never resurrects a crisply-eliminated
@@ -344,6 +347,7 @@ def _build_graded_graph_internal(
         move_node_by_id[probe.move_id] = move_id
         arguments.add(move_id)
         intrinsic[move_id] = Opinion.vacuous(policy.move_base_rate(probe))
+        attacker_by_label: dict[str, str] = {}
 
         for label in probe.reasons:
             evidence = _heuristic_evidence(label)
@@ -368,6 +372,37 @@ def _build_graded_graph_internal(
                 probe=probe, label=label, magnitude=evidence.magnitude
             )
             edge = (wit_id, move_id)
+            attacks.add(edge)
+            edge_opinions[edge] = edge_trust
+            attacker_by_label[label] = wit_id
+
+        for label in probe.reply_attacks:
+            evidence = _heuristic_evidence(label)
+            if evidence is None:
+                continue
+            wit_id = _witness_arg_id(probe.move_id, label)
+            arguments.add(wit_id)
+            intrinsic[wit_id] = policy.witness_opinion(
+                probe=probe, label=label, magnitude=evidence.magnitude
+            )
+            edge = (wit_id, move_id)
+            attacks.add(edge)
+            edge_opinions[edge] = edge_trust
+            attacker_by_label[label] = wit_id
+
+        for label in probe.defenses:
+            evidence = _heuristic_evidence(label)
+            if evidence is None or evidence.answered is None:
+                continue
+            answered_wit_id = attacker_by_label.get(evidence.answered)
+            if answered_wit_id is None:
+                continue
+            wit_id = _witness_arg_id(probe.move_id, label)
+            arguments.add(wit_id)
+            intrinsic[wit_id] = policy.witness_opinion(
+                probe=probe, label=label, magnitude=evidence.magnitude
+            )
+            edge = (wit_id, answered_wit_id)
             attacks.add(edge)
             edge_opinions[edge] = edge_trust
 
