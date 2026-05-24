@@ -19,6 +19,8 @@ adds the **HEURISTIC-tier** rows. The full §5 taxonomy this parser now knows:
     reply:terminal_loss               WINNING     FACT
     reply:material:{n}                MATERIAL    FACT
     defense:holds_exchange@{answered} MATERIAL    FACT
+    defense:heuristic_suppression@{answered}
+                                       STRUCTURE   HEURISTIC
     pro:opposition                    TEMPO       HEURISTIC
     pro:back_rank_hold                STRUCTURE   HEURISTIC
     pro:center:{n}                    STRUCTURE   HEURISTIC
@@ -65,11 +67,13 @@ A ``defense:`` label is **keyed to the specific objection / reply it answers**
 one"). The keyed form is ``defense:holds_exchange@{answered}`` where
 ``{answered}`` is itself a valid FACT objection / reply label (e.g.
 ``defense:holds_exchange@reply:material:100``). The ``answered`` field on the
-parsed :class:`ArgumentEvidence` carries the target label so the crisp layer
-(``arguments.py``) can wire the defense to *only* that attacker. The bare,
-un-keyed ``defense:holds_exchange`` is still accepted by this parser (it is a
-valid evidence type) but ``witnesses.py`` never emits it — every emitted
-defense carries its target.
+parsed :class:`ArgumentEvidence` carries the target label so the graph builder
+(``arguments.py``) can wire the defense to *only* that attacker. The
+FACT-tier ``defense:holds_exchange`` lives in the crisp Dung layer; the
+HEURISTIC-tier ``defense:heuristic_suppression`` lives in the graded opinion
+graph as an attack on the answered HEURISTIC objection witness. The bare,
+un-keyed defense types are still accepted by this parser (they are valid
+evidence types) but witness producers should emit keyed forms.
 
 A FACT ``:{n}`` magnitude is the resolver's native **weighted material** unit
 (man = 100, king = 150) — the same unit ``captures.ShotResult.material_net``
@@ -171,6 +175,7 @@ _FIXED: dict[str, tuple[Value, Tier]] = {
     "obj:strategy:unsupported_major_drift": (Value.TEMPO, Tier.HEURISTIC),
     "obj:strategy:threefold_repetition": (Value.TEMPO, Tier.HEURISTIC),
     "obj:strategy:fifty_move_draw": (Value.TEMPO, Tier.HEURISTIC),
+    "defense:heuristic_suppression": (Value.STRUCTURE, Tier.HEURISTIC),
 }
 
 _MAGNITUDE: dict[str, tuple[Value, Tier]] = {
