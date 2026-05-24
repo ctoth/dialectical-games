@@ -203,6 +203,57 @@ def test_graded_layer_attacks_lower_expectation() -> None:
     )
 
 
+def test_graded_heuristic_defense_attacks_answered_objection_witness() -> None:
+    """A HEURISTIC defense suppresses its answered objection inside the graph."""
+    graph = build_root_argument_graph(
+        [
+            MoveProbe(
+                move_id="m1",
+                child_eval=0,
+                objections=("obj:exposes_man",),
+                defenses=("defense:heuristic_suppression@obj:exposes_man",),
+            )
+        ],
+        _POLICY,
+    )
+    defense_witness = "wit:m1:defense:heuristic_suppression@obj:exposes_man"
+    objection_witness = "wit:m1:obj:exposes_man"
+    move_node = "move:m1"
+
+    assert (defense_witness, objection_witness) in graph.ranking["attacks"]
+    assert (defense_witness, move_node) not in graph.ranking["supports"]
+    assert (defense_witness, move_node) not in graph.ranking["attacks"]
+
+
+def test_graded_heuristic_defense_restores_toward_baseline_without_boost() -> None:
+    """A HEURISTIC defense weakens an objection but does not add pro support."""
+    bland = build_root_argument_graph(
+        [MoveProbe(move_id="m1", child_eval=0)], _POLICY
+    )
+    attacked = build_root_argument_graph(
+        [
+            MoveProbe(
+                move_id="m1", child_eval=0, objections=("obj:exposes_man",)
+            )
+        ],
+        _POLICY,
+    )
+    defended = build_root_argument_graph(
+        [
+            MoveProbe(
+                move_id="m1",
+                child_eval=0,
+                objections=("obj:exposes_man",),
+                defenses=("defense:heuristic_suppression@obj:exposes_man",),
+            )
+        ],
+        _POLICY,
+    )
+
+    assert defended.ranking["move_scores"]["m1"] > attacked.ranking["move_scores"]["m1"]
+    assert defended.ranking["move_scores"]["m1"] <= bland.ranking["move_scores"]["m1"]
+
+
 def test_graded_layer_subset_of_survivors() -> None:
     """The graded move-node set is a subset of the crisp survivors."""
     probes = [
