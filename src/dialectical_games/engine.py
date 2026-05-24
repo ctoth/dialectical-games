@@ -31,7 +31,7 @@ implementations may rely on.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from dialectical_games.arguments import (
@@ -260,8 +260,3 @@ __all__ = [
     "ReDecide",
     "analyze",
 ]
-
-
-# Suppress unused-name warnings — ``field`` is imported for cartridge
-# convenience even though this module does not consume it itself.
-_ = field
