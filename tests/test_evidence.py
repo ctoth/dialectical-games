@@ -108,6 +108,7 @@ HEURISTIC_LABELS: list[tuple[str, Value, Tier]] = [
     # Witness-vocabulary enrichment — magnitude-carrying HEURISTIC rows.
     ("pro:cramps_opponent:2", Value.MOBILITY, Tier.HEURISTIC),
     ("obj:cedes_centre:1", Value.STRUCTURE, Tier.HEURISTIC),
+    ("defense:heuristic_suppression", Value.STRUCTURE, Tier.HEURISTIC),
 ]
 
 
@@ -235,7 +236,8 @@ def test_magnitude_is_parsed(label: str, magnitude: int) -> None:
 @pytest.mark.parametrize(
     "label",
     ["pro:terminal_win", "pro:crown", "obj:terminal_loss",
-     "reply:terminal_loss", "defense:holds_exchange"],
+     "reply:terminal_loss", "defense:holds_exchange",
+     "defense:heuristic_suppression"],
 )
 def test_magnitudeless_labels_have_none_magnitude(label: str) -> None:
     """A label with no ``:{n}`` magnitude carries ``magnitude is None``."""
@@ -263,22 +265,40 @@ def test_magnitudeless_labels_have_none_magnitude(label: str) -> None:
             "defense:holds_exchange@obj:allows_shot:250",
             "obj:allows_shot:250",
         ),
+        (
+            "defense:heuristic_suppression@obj:exposes_man",
+            "obj:exposes_man",
+        ),
+        (
+            "defense:heuristic_suppression@obj:king_safety:flank_pawn_lunge",
+            "obj:king_safety:flank_pawn_lunge",
+        ),
     ],
     ids=lambda v: str(v),
 )
 def test_keyed_defense_carries_its_answered_target(
     label: str, answered: str
 ) -> None:
-    """A keyed defense parses to FACT MATERIAL evidence carrying ``answered``.
+    """A keyed defense parses to evidence carrying ``answered``.
 
     Design §6: a defense answers "the objection/reply it answers, and only that
     one". The keyed label ``defense:holds_exchange@{answered}`` parses so the
-    ``answered`` field names that exact target.
+    ``answered`` field names that exact target. FACT defenses live in the crisp
+    layer; HEURISTIC defenses live in the graded graph.
     """
     evidence = to_argument_evidence(label)
-    assert evidence.value is Value.MATERIAL
-    assert evidence.tier is Tier.FACT
     assert evidence.answered == answered
+
+
+@pytest.mark.unit
+def test_keyed_heuristic_defense_is_heuristic() -> None:
+    """A heuristic suppression defense is typed for the graded graph, not crisp Dung."""
+    evidence = to_argument_evidence(
+        "defense:heuristic_suppression@obj:exposes_man"
+    )
+    assert evidence.value is Value.STRUCTURE
+    assert evidence.tier is Tier.HEURISTIC
+    assert evidence.answered == "obj:exposes_man"
 
 
 @pytest.mark.unit
