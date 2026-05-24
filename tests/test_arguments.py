@@ -20,6 +20,8 @@ cartridge-side. Here a single stub policy stands in for any cartridge's
 from __future__ import annotations
 
 from doxa import Opinion
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from dialectical_games.arguments import (
     GradedPolicy,
@@ -332,3 +334,50 @@ def test_with_probes_return_type_satisfies_protocol() -> None:
         probe=probes[0], label="pro:material:100", magnitude=100
     )
     assert isinstance(op, Opinion)
+
+
+# --- hypothesis-generative property tests for `with_probes` ------------------
+
+_PROBE_STRATEGY = st.builds(
+    MoveProbe,
+    move_id=st.text(
+        alphabet=st.characters(min_codepoint=ord("a"), max_codepoint=ord("z")),
+        min_size=1,
+        max_size=4,
+    ),
+    child_eval=st.integers(min_value=-10000, max_value=10000),
+)
+
+
+@given(probes=st.lists(_PROBE_STRATEGY, min_size=0, max_size=8))
+@settings(
+    max_examples=50,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+def test_with_probes_return_satisfies_protocol_property(
+    probes: list[MoveProbe],
+) -> None:
+    """For any probe sequence, the policy returned by ``with_probes`` has
+    the full ``GradedPolicy`` Protocol surface (Codex chunk-H' MINOR).
+
+    The Protocol contract is: ``with_probes(probes)`` returns an object on
+    which (a) ``edge_trust`` is a ``doxa.Opinion``, (b) ``move_base_rate``
+    is callable and returns a value strictly in the open unit interval
+    (the doxa non-dogmatic precondition), and (c) ``witness_opinion`` is
+    callable and returns an ``Opinion`` whose Jøsang components sum to 1.
+    Any stub-equivalent policy must satisfy this for every probe sequence.
+    """
+    bound: GradedPolicy = _POLICY.with_probes(tuple(probes))
+    assert isinstance(bound.edge_trust, Opinion)
+    # `move_base_rate` and `witness_opinion` need a probe to read; pick one
+    # if available, otherwise synthesise.
+    sample_probe = probes[0] if probes else MoveProbe(move_id="sample")
+    rate = bound.move_base_rate(sample_probe)
+    assert 0.0 < rate < 1.0
+    op = bound.witness_opinion(
+        probe=sample_probe, label="pro:material:100", magnitude=100
+    )
+    assert isinstance(op, Opinion)
+    # Jøsang invariant on the returned opinion.
+    assert abs((op.b + op.d + op.u) - 1.0) < 1e-9
