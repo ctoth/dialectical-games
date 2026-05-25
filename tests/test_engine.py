@@ -1,4 +1,10 @@
-"""Tests for the game-agnostic engine orchestrator."""
+"""Tests for the game-agnostic engine orchestrator.
+
+Phase 5 chunk 1: probes carry typed
+:class:`~dialectical_games.evidence.ArgumentEvidence`. The orchestrator
+itself does not inspect evidence; these tests cover the same orchestrator
+behaviours under the new probe shape.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +12,12 @@ from dataclasses import replace
 
 from doxa import Opinion
 
-from dialectical_games.arguments import GradedPolicy, MoveProbe, RootArgumentGraph
+from dialectical_games.arguments import (
+    ArgumentEvidence,
+    GradedPolicy,
+    MoveProbe,
+)
+from dialectical_games.decider import _TERMINAL_LOSS_MAGNITUDE
 from dialectical_games.engine import (
     Cartridge,
     EngineSettings,
@@ -14,13 +25,14 @@ from dialectical_games.engine import (
     PostDecisionResult,
     analyze,
 )
+from dialectical_games.evidence import Role
+from dialectical_games.scheme import Tier
 
 
 class _StubPolicy:
     """A minimal :class:`GradedPolicy` for the orchestrator tests."""
 
     def with_probes(self, probes: object) -> "_StubPolicy":
-        # Chunk H': no per-position aggregates; identity.
         return self
 
     @property
@@ -31,19 +43,13 @@ class _StubPolicy:
         return 0.5
 
     def witness_opinion(
-        self, *, probe: MoveProbe, label: str, magnitude: int | None
+        self, *, probe: MoveProbe, evidence: ArgumentEvidence
     ) -> Opinion:
         return Opinion(0.55, 0.15, 0.30, 0.5)
 
 
 class _StubCartridge:
-    """A minimal :class:`Cartridge` returning a fixed probe set.
-
-    The cartridge no longer carries a selector callback — the core
-    :func:`dialectical_games.decider.lexicographic_decide` is the
-    decider. The cartridge supplies only the probe set and the graded
-    policy.
-    """
+    """A minimal :class:`Cartridge` returning a fixed probe set."""
 
     def __init__(self, probes: tuple[MoveProbe, ...]) -> None:
         self._probes = probes
@@ -53,6 +59,24 @@ class _StubCartridge:
 
     def make_graded_policy(self, board: object) -> GradedPolicy:
         return _StubPolicy()
+
+
+def _terminal_pro() -> ArgumentEvidence:
+    return ArgumentEvidence(
+        role=Role.PRO,
+        tier=Tier.FACT,
+        magnitude=_TERMINAL_LOSS_MAGNITUDE,
+        tag="terminal_win",
+    )
+
+
+def _terminal_objection() -> ArgumentEvidence:
+    return ArgumentEvidence(
+        role=Role.OBJECTION,
+        tier=Tier.FACT,
+        magnitude=_TERMINAL_LOSS_MAGNITUDE,
+        tag="terminal_loss",
+    )
 
 
 def test_analyze_terminal_position() -> None:
@@ -77,12 +101,7 @@ def test_analyze_terminal_position() -> None:
 
 
 def test_analyze_picks_core_decider_selection() -> None:
-    """The orchestrator returns the core decider's choice on the probe set.
-
-    Two clean probes with no FACT pro / objection and ``child_eval == 0``
-    tie on FACT terms 1-4 and on the term-5 child_eval; the move-id
-    tiebreak picks the lexicographically smaller id (``m1``).
-    """
+    """The orchestrator returns the core decider's choice on the probe set."""
     probes = (MoveProbe(move_id="m1"), MoveProbe(move_id="m2"))
     cartridge: Cartridge = _StubCartridge(probes)
     analysis = analyze(object(), cartridge=cartridge)
@@ -94,7 +113,7 @@ def test_analyze_picks_core_decider_selection() -> None:
 def test_analyze_picks_fact_winner() -> None:
     """The core decider picks the move carrying the FACT terminal-win pro."""
     losing = MoveProbe(move_id="m1")
-    winning = MoveProbe(move_id="m2", reasons=("pro:terminal_win",))
+    winning = MoveProbe(move_id="m2", evidence=(_terminal_pro(),))
     cartridge: Cartridge = _StubCartridge((losing, winning))
     analysis = analyze(object(), cartridge=cartridge)
     assert analysis.decision.move_id == "m2"
@@ -110,7 +129,6 @@ def test_post_decision_hook_can_replace_selection() -> None:
         probes: tuple[MoveProbe, ...],
         selected: MoveProbe | None,
     ) -> PostDecisionResult:
-        # Override: pick m2.
         return PostDecisionResult(probes=probes, selected=probes[1])
 
     analysis = analyze(object(), cartridge=cartridge, post_decision=hook)
@@ -118,7 +136,7 @@ def test_post_decision_hook_can_replace_selection() -> None:
 
 
 def test_post_decision_hook_can_mutate_probes_and_redecide() -> None:
-    """A hook can append an objection and re-run the core decider via ``redecide``."""
+    """A hook can add an objection and re-run the core decider via ``redecide``."""
     probes = (
         MoveProbe(move_id="m1"),
         MoveProbe(move_id="m2"),
@@ -133,19 +151,17 @@ def test_post_decision_hook_can_mutate_probes_and_redecide() -> None:
         # Add a FACT terminal-loss objection to m1 and re-decide. The
         # crisp layer now eliminates m1; the core decider picks m2.
         assert selected is not None
-        attacked = replace(probes[0], objections=("obj:terminal_loss",))
+        attacked = replace(probes[0], evidence=(_terminal_objection(),))
         new_probes = (attacked, probes[1])
         new_selected = ctx.redecide(new_probes)
         return PostDecisionResult(probes=new_probes, selected=new_selected)
 
     analysis = analyze(object(), cartridge=cartridge, post_decision=hook)
-    # m1 carries an undefeated FACT objection and is eliminated; the core
-    # decider must return m2 — the only crisp survivor.
     assert analysis.decision.move_id == "m2"
-    assert analysis.probes == (
-        MoveProbe(move_id="m1", objections=("obj:terminal_loss",)),
-        probes[1],
-    )
+    assert analysis.probes[0].move_id == "m1"
+    assert len(analysis.probes[0].evidence) == 1
+    assert analysis.probes[0].evidence[0].role is Role.OBJECTION
+    assert analysis.probes[1] == probes[1]
 
 
 def test_post_decision_context_carries_settings() -> None:

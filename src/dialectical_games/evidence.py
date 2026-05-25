@@ -1,92 +1,20 @@
-"""Witness label -> typed ``ArgumentEvidence`` (design §5).
+"""Typed evidence for one witness on one move (game-agnostic core).
 
-The comorphism that turns a stringly-typed witness label into typed evidence
-carrying a ``Value``, a ``Tier`` and any parsed magnitude (design
-``notes/checkers-design.md`` §4-5). dialectical-chess guessed evidence from
-string prefixes; here every label is parsed once, in one place, into a closed
-taxonomy — there is no prefix dispatch scattered through the codebase.
+Phase 5 chunk 1: the game-flavoured label parser is gone. The cartridge
+constructs :class:`ArgumentEvidence` directly per witness and attaches the
+tuple to :class:`~dialectical_games.arguments.MoveProbe.evidence`. The core
+never inspects a label string, never dispatches on a prefix, never parses an
+``@``-keyed defense — every dispatch is enum-typed.
 
-Phase 3a implemented the **FACT-tier** rows of the design §5 tables; Phase 4
-adds the **HEURISTIC-tier** rows. The full §5 taxonomy this parser now knows:
-
-    pro:terminal_win                  WINNING     FACT
-    pro:material:{n}                  MATERIAL    FACT
-    pro:crown                         KING_COUNT  FACT
-    pro:shot_setup:{n}                MATERIAL    FACT
-    obj:terminal_loss                 WINNING     FACT
-    obj:allows_shot:{n}               MATERIAL    FACT
-    obj:loses_exchange:{n}            MATERIAL    FACT
-    reply:terminal_loss               WINNING     FACT
-    reply:material:{n}                MATERIAL    FACT
-    defense:holds_exchange@{answered} MATERIAL    FACT
-    defense:heuristic_suppression@{answered}
-                                       STRUCTURE   HEURISTIC
-    pro:opposition                    TEMPO       HEURISTIC
-    pro:back_rank_hold                STRUCTURE   HEURISTIC
-    pro:center:{n}                    STRUCTURE   HEURISTIC
-    pro:mobility:{n}                  MOBILITY    HEURISTIC
-    pro:formation:{kind}              STRUCTURE   HEURISTIC
-    obj:loses_opposition              TEMPO       HEURISTIC
-    obj:back_rank_break               STRUCTURE   HEURISTIC
-    obj:single_corner_drift           STRUCTURE   HEURISTIC
-    obj:exposes_man                   MATERIAL    HEURISTIC
-    pro:frees_trapped_piece           STRUCTURE   HEURISTIC
-    pro:safe_side_man                 STRUCTURE   HEURISTIC
-    pro:strong_back_structure         STRUCTURE   HEURISTIC
-    pro:king_centralised              KING_COUNT  HEURISTIC
-    pro:cramps_opponent:{n}           MOBILITY    HEURISTIC
-    obj:trapped_piece                 STRUCTURE   HEURISTIC
-    obj:cedes_centre:{n}              STRUCTURE   HEURISTIC
-    obj:weakens_back_structure        STRUCTURE   HEURISTIC
-
-The witness-vocabulary enrichment added the last seven HEURISTIC rows (the
-Tier A new witnesses plus the two cheap completions). ``pro:runaway`` is
-deferred — see ``witnesses.py``.
-
-Chunk G.1 (core Phase 3) adds the chess HEURISTIC vocabulary as additional
-HEURISTIC rows: ``pro:development:*``, ``pro:king_safety:*``,
-``obj:king_safety:*``, ``obj:opening:*``, ``pro:piece_safety:defended:{n}``,
-``pro:tactical:threat:{n}``, ``pro:tactical:checking_exchange_pressure``,
-``pro:smt:fork:{n}``, ``obj:smt:fork:*``, ``obj:strategy:*``,
-``pro:pawn_structure:passed_pawn``, ``pro:file_control:open_file``,
-``pro:outpost:supported``, ``pro:center_control:{n}``. The flat-with-role-
-prefix shape matches the existing checkers HEURISTIC rows; the chess
-emitter side translates its game-typed labels into these keys via
-``dialectical_chess.core_labels`` (see chunk G.1 plan).
-
-A HEURISTIC label is a positional judgement, not a resolver/terminal proof; the
-tier field is exactly the ``Bench-Capon_2003`` fact-as-highest-value bridge
-(design §4) — a FACT label outranks every HEURISTIC one. ``pro:formation`` is
-the one HEURISTIC label carrying a non-numeric tag: its ``{kind}`` is a closed
-enum (``phalanx`` / ``bridge`` / ``echelon`` — design §5 "bridge / phalanx /
-echelon") parsed into the ``magnitude``-less :class:`ArgumentEvidence` with the
-kind kept in the ``label``.
-
-A ``defense:`` label is **keyed to the specific objection / reply it answers**
-(design §6 — "a defense defeats the objection/reply it answers, and only that
-one"). The keyed form is ``defense:holds_exchange@{answered}`` where
-``{answered}`` is itself a valid FACT objection / reply label (e.g.
-``defense:holds_exchange@reply:material:100``). The ``answered`` field on the
-parsed :class:`ArgumentEvidence` carries the target label so the graph builder
-(``arguments.py``) can wire the defense to *only* that attacker. The
-FACT-tier ``defense:holds_exchange`` lives in the crisp Dung layer; the
-HEURISTIC-tier ``defense:heuristic_suppression`` lives in the graded opinion
-graph as an attack on the answered HEURISTIC objection witness. The bare,
-un-keyed defense types are still accepted by this parser (they are valid
-evidence types) but witness producers should emit keyed forms.
-
-A FACT ``:{n}`` magnitude is the resolver's native **weighted material** unit
-(man = 100, king = 150) — the same unit ``captures.ShotResult.material_net``
-and ``ResolvedLine.material_swing`` report. ``reply:`` and ``defense:`` are
-emitted by ``witnesses.py`` only when the resolver *proved* the line, so they
-are FACT here; their HEURISTIC forms (a truncated resolver line) are simply
-never produced and therefore never reach this parser.
-
-A HEURISTIC ``:{n}`` magnitude is **not** a material unit: ``pro:center:{n}``
-counts central-square occupation and ``pro:mobility:{n}`` counts a legal-move
-gain. The magnitude is still a strictly positive base-10 integer, parsed into
-the same ``magnitude`` field; its interpretation is the witness's own (a count,
-not material). ``witnesses.py`` documents the exact count per HEURISTIC label.
+The shape: one :class:`Role` enum (``PRO`` / ``OBJECTION`` / ``REPLY_ATTACK``
+/ ``DEFENSE``) and one frozen :class:`ArgumentEvidence` dataclass carrying
+``(role, tier, magnitude, answered, tag)``. ``answered`` is the EVIDENCE
+OBJECT the defense answers (identity-typed, not a string label), so the
+graph builders match the defense to its attacker via ``id(ev.answered)`` and
+never through string equality. ``magnitude`` is an int on a scale the
+cartridge controls — the core only does ``max``/comparison and treats the
+default 0 as the smallest value. ``tag`` is opaque (typed ``Any``) and only
+ever surfaces in argument ids and diagnostics; the core never inspects it.
 
 This module imports only from within ``dialectical_games`` and the stdlib.
 """
@@ -94,234 +22,61 @@ This module imports only from within ``dialectical_games`` and the stdlib.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
-from dialectical_games.scheme import Tier, Value
+from dialectical_games.scheme import Tier
+
+
+class Role(Enum):
+    """What role one witness plays for its move (design §5).
+
+    A FACT-tier ``OBJECTION`` / ``REPLY_ATTACK`` becomes a crisp Dung
+    defeater of the move; a FACT-tier ``DEFENSE`` becomes a crisp defeater
+    of whichever ``ArgumentEvidence`` it answers. HEURISTIC witnesses live
+    in the graded layer with the same role-driven dispatch.
+    """
+
+    PRO = "pro"
+    OBJECTION = "objection"
+    REPLY_ATTACK = "reply_attack"
+    DEFENSE = "defense"
 
 
 @dataclass(frozen=True)
 class ArgumentEvidence:
-    """Typed evidence for one witness label (design §4-5).
+    """Typed evidence for one witness on one move (game-agnostic).
 
-    ``label`` is the original stringly-typed witness label; ``value`` is the
-    AS2 value the witness promotes or demotes; ``tier`` is ``FACT`` for a
-    resolver/terminal-proven witness and ``HEURISTIC`` for a positional one;
-    ``magnitude`` is the parsed ``:{n}`` integer (weighted material) when the
-    label carries one, else ``None``; ``answered`` is the objection / reply
-    label a keyed ``defense:`` witness answers (design §6 "and only that one"),
-    else ``None``.
+    Fields:
+
+    * ``role`` — :class:`Role` enum: pro-reason, objection, reply attack, or
+      defense. Drives every builder dispatch in :mod:`arguments` and every
+      decider component in :mod:`decider`.
+    * ``tier`` — :class:`Tier` enum: ``FACT`` (proven resolver / terminal)
+      or ``HEURISTIC`` (positional judgement). The
+      Bench-Capon-2003 fact-as-highest-value bridge: a FACT outranks any
+      HEURISTIC.
+    * ``magnitude`` — non-negative integer on a scale the cartridge
+      controls. The core treats 0 as the smallest value (so boolean
+      witnesses pass 0 / the default). Cartridges that want "this is a
+      game-winning fact" use
+      :data:`dialectical_games.decider._TERMINAL_LOSS_MAGNITUDE` as the
+      magnitude convention; the core then naturally sorts it above any
+      finite cartridge value.
+    * ``answered`` — for a ``DEFENSE`` only: the exact
+      :class:`ArgumentEvidence` object that this defense answers, by
+      Python identity (``is``). The builders match by ``id(ev.answered)``
+      to the attacker's argument id; a defense whose answered evidence is
+      not on the same move's attacker set wires no edge.
+    * ``tag`` — opaque cartridge identifier; the core never inspects it,
+      only surfaces it in argument-id construction and diagnostics. A
+      cartridge that wants stable / reproducible argument ids carries its
+      own ``SupportKind`` / ``ObjectionKind`` / ``DefeaterKind`` /
+      whatever in ``tag``.
     """
 
-    label: str
-    value: Value
+    role: Role
     tier: Tier
-    magnitude: int | None = None
-    answered: str | None = None
-
-
-# --- the §5 label taxonomy (FACT + HEURISTIC) -------------------------------
-#
-# Three tables. ``_FIXED`` — labels with no magnitude, mapped directly to their
-# (Value, Tier). ``_MAGNITUDE`` — label prefixes that MUST carry a ``:{n}``
-# integer magnitude, mapped to their (Value, Tier). ``_FORMATION_KINDS`` — the
-# closed enum of ``pro:formation:{kind}`` suffixes (the one HEURISTIC label
-# carrying a non-numeric tag). Splitting them keeps the parser dict lookups
-# with no per-label branching.
-
-_FIXED: dict[str, tuple[Value, Tier]] = {
-    # FACT-tier (design §5, Phase 3a).
-    "pro:terminal_win": (Value.WINNING, Tier.FACT),
-    "pro:crown": (Value.KING_COUNT, Tier.FACT),
-    "obj:terminal_loss": (Value.WINNING, Tier.FACT),
-    "reply:terminal_loss": (Value.WINNING, Tier.FACT),
-    "defense:holds_exchange": (Value.MATERIAL, Tier.FACT),
-    # HEURISTIC-tier (design §5, Phase 4) — fixed, no magnitude.
-    "pro:opposition": (Value.TEMPO, Tier.HEURISTIC),
-    "pro:back_rank_hold": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:loses_opposition": (Value.TEMPO, Tier.HEURISTIC),
-    "obj:back_rank_break": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:single_corner_drift": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:exposes_man": (Value.MATERIAL, Tier.HEURISTIC),
-    # HEURISTIC-tier (witness-vocabulary enrichment) — fixed, no magnitude.
-    "pro:frees_trapped_piece": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:safe_side_man": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:strong_back_structure": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:king_centralised": (Value.KING_COUNT, Tier.HEURISTIC),
-    "obj:trapped_piece": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:weakens_back_structure": (Value.STRUCTURE, Tier.HEURISTIC),
-    # HEURISTIC-tier (chunk G.1 — chess HEURISTIC vocabulary extension).
-    # Flat with role prefix; second segment names the chess-specific concept
-    # (``development``, ``king_safety``, ``opening`` ...). See
-    # ``reports/core-phase3-chunkg-plan.md`` §2-3 for the namespacing rationale
-    # and the per-row Value mapping. All chunk-G.1 rows are HEURISTIC; the
-    # FACT-route fix for QUEEN_FLANK_INVASION is deferred to a follow-up cycle.
-    "pro:development:center_pawn": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:development:minor_piece": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:king_safety:castle": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:pawn_structure:passed_pawn": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:file_control:open_file": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:outpost:supported": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:king_safety:escape_square": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:king_safety:advanced_flank_pawn_response": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:king_safety:castled_flank_pawn_weakening": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:king_safety:flank_pawn_weakening": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:king_safety:flank_pawn_lunge": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:king_safety:unanswered_advanced_flank_pawn": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:king_safety:queen_flank_invasion": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:opening:minor_retreat": (Value.TEMPO, Tier.HEURISTIC),
-    "obj:opening:king_center_flight": (Value.TEMPO, Tier.HEURISTIC),
-    "obj:opening:king_walk": (Value.TEMPO, Tier.HEURISTIC),
-    "pro:tactical:checking_exchange_pressure": (Value.TEMPO, Tier.HEURISTIC),
-    "obj:smt:fork:high_value_piece": (Value.MATERIAL, Tier.HEURISTIC),
-    "obj:strategy:unsupported_major_drift": (Value.TEMPO, Tier.HEURISTIC),
-    "obj:strategy:threefold_repetition": (Value.TEMPO, Tier.HEURISTIC),
-    "obj:strategy:fifty_move_draw": (Value.TEMPO, Tier.HEURISTIC),
-    "defense:heuristic_suppression": (Value.STRUCTURE, Tier.HEURISTIC),
-}
-
-_MAGNITUDE: dict[str, tuple[Value, Tier]] = {
-    # FACT-tier (design §5, Phase 3a) — magnitude is weighted material.
-    "pro:material": (Value.MATERIAL, Tier.FACT),
-    "pro:shot_setup": (Value.MATERIAL, Tier.FACT),
-    "obj:allows_shot": (Value.MATERIAL, Tier.FACT),
-    "obj:loses_exchange": (Value.MATERIAL, Tier.FACT),
-    "reply:material": (Value.MATERIAL, Tier.FACT),
-    # HEURISTIC-tier (design §5, Phase 4) — magnitude is a positional COUNT,
-    # not material (``pro:center`` central-square occupation gained,
-    # ``pro:mobility`` legal-move-count gained). ``pro:mobility:{n}`` is
-    # shared between checkers (legal-move-count gained) and chess (legal-move
-    # count gain) — see chunk G.1 plan §3 reuse row.
-    "pro:center": (Value.STRUCTURE, Tier.HEURISTIC),
-    "pro:mobility": (Value.MOBILITY, Tier.HEURISTIC),
-    # HEURISTIC-tier (witness-vocabulary enrichment) — magnitude is a
-    # positional COUNT (``pro:cramps_opponent`` the opponent's legal-move-count
-    # drop, ``obj:cedes_centre`` the central-square occupation lost).
-    "pro:cramps_opponent": (Value.MOBILITY, Tier.HEURISTIC),
-    "obj:cedes_centre": (Value.STRUCTURE, Tier.HEURISTIC),
-    # HEURISTIC-tier (chunk G.1 — chess HEURISTIC vocabulary extension).
-    # Two magnitude scales coexist now: count-scale (1-4 typical) and
-    # centipawn-scale (100-3000 typical). The parser does not distinguish —
-    # both are positive integers — but the chess graded policy applies
-    # per-prefix saturation. See ``reports/core-phase3-chunkg-plan.md`` §5 /
-    # §7-A for the dual-scale risk and the chess-side saturation tuning.
-    "pro:center_control": (Value.STRUCTURE, Tier.HEURISTIC),
-    "obj:opening:premature_minor_check": (Value.TEMPO, Tier.HEURISTIC),
-    "obj:opening:premature_rook": (Value.TEMPO, Tier.HEURISTIC),
-    "obj:opening:premature_queen": (Value.TEMPO, Tier.HEURISTIC),
-    "pro:piece_safety:defended": (Value.MATERIAL, Tier.HEURISTIC),
-    "pro:tactical:threat": (Value.MATERIAL, Tier.HEURISTIC),
-    "pro:smt:fork": (Value.MATERIAL, Tier.HEURISTIC),
-    "obj:smt:fork:moved_piece_en_pris": (Value.MATERIAL, Tier.HEURISTIC),
-}
-
-# ``pro:formation:{kind}`` — the closed set of named formations (design §5
-# "bridge / phalanx / echelon"). The kind is a non-numeric suffix; a label
-# whose suffix is not one of these is rejected, never silently mistyped.
-_FORMATION_PREFIX = "pro:formation"
-_FORMATION_KINDS: frozenset[str] = frozenset({"phalanx", "bridge", "echelon"})
-_FORMATION_TYPING: tuple[Value, Tier] = (Value.STRUCTURE, Tier.HEURISTIC)
-
-
-# --- keyed defense labels (design §6) ---------------------------------------
-#
-# A defense is keyed to the objection / reply it answers with an ``@``
-# separator: ``defense:holds_exchange@reply:material:100``. The part before the
-# ``@`` is a bare defense type (it must be in ``_FIXED`` and be a ``defense:``
-# label); the part after is the answered objection / reply label, itself parsed
-# recursively so a malformed target is rejected.
-
-_DEFENSE_KEY_SEP = "@"
-
-
-def to_argument_evidence(label: str) -> ArgumentEvidence:
-    """Map a witness label to typed :class:`ArgumentEvidence` (design §5).
-
-    A fixed label (no magnitude) is looked up directly. A magnitude-carrying
-    label has the form ``<prefix>:<n>`` where ``<n>`` is a base-10 integer;
-    the prefix is looked up and ``<n>`` parsed into ``magnitude``. A keyed
-    defense label has the form ``<defense-type>@<answered>`` where
-    ``<answered>`` is itself a valid objection / reply label; the parsed
-    ``answered`` field carries that target (design §6 "and only that one"). A
-    ``pro:formation:{kind}`` label has a named-formation suffix from the closed
-    ``_FORMATION_KINDS`` enum — not a magnitude.
-
-    Both FACT and HEURISTIC §5 rows are recognised (Phase 4 added the
-    HEURISTIC rows). Raises :class:`ValueError` for an empty, malformed, or
-    unknown label, for a magnitude label whose ``:{n}`` part is missing or
-    non-numeric, or for a ``pro:formation`` label with an unknown kind — a
-    label is never silently mistyped.
-    """
-    if not label:
-        raise ValueError("empty witness label")
-
-    # A keyed defense label: ``<defense-type>@<answered-label>``.
-    if _DEFENSE_KEY_SEP in label:
-        defense_type, _, answered_label = label.partition(_DEFENSE_KEY_SEP)
-        defense_fixed = _FIXED.get(defense_type)
-        if defense_fixed is None or not defense_type.startswith("defense:"):
-            raise ValueError(f"unknown keyed defense label {label!r}")
-        if not answered_label:
-            raise ValueError(
-                f"keyed defense label {label!r} has an empty answered target"
-            )
-        # The answered target must itself be a valid objection / reply label.
-        answered = to_argument_evidence(answered_label)
-        if not (
-            answered_label.startswith("obj:")
-            or answered_label.startswith("reply:")
-        ):
-            raise ValueError(
-                f"keyed defense label {label!r} answers a non-attack label "
-                f"{answered_label!r}"
-            )
-        value, tier = defense_fixed
-        return ArgumentEvidence(
-            label=label, value=value, tier=tier, answered=answered_label
-        )
-
-    fixed = _FIXED.get(label)
-    if fixed is not None:
-        value, tier = fixed
-        return ArgumentEvidence(label=label, value=value, tier=tier)
-
-    # A magnitude label is ``<prefix>:<n>`` — split off the trailing ``:<n>``.
-    head, sep, tail = label.rpartition(":")
-    if not sep:
-        raise ValueError(f"unknown witness label {label!r}")
-
-    # ``pro:formation:{kind}`` — a HEURISTIC label whose tail is a named
-    # formation kind, not a magnitude. The kind must be in the closed
-    # ``_FORMATION_KINDS`` enum; an unknown kind is rejected, never mistyped.
-    if head == _FORMATION_PREFIX:
-        if tail not in _FORMATION_KINDS:
-            raise ValueError(
-                f"witness label {label!r} has an unknown formation kind "
-                f"{tail!r} (known: {sorted(_FORMATION_KINDS)})"
-            )
-        value, tier = _FORMATION_TYPING
-        return ArgumentEvidence(label=label, value=value, tier=tier)
-
-    mag = _MAGNITUDE.get(head)
-    if mag is None:
-        raise ValueError(f"unknown witness label {label!r}")
-    # ``{n}`` is a material gain/loss magnitude (design §5): a strictly
-    # positive base-10 integer of bare ASCII digits. A signed (``-100``,
-    # ``+100``) or zero magnitude is malformed — the witness producers only
-    # ever emit positive magnitudes, and accepting a signed/zero one would
-    # silently mistype a malformed label as valid FACT evidence (cf. the
-    # malformed-label rejection above). ``str.isascii() and str.isdecimal()``
-    # admits exactly a run of ASCII ``0``-``9`` and rejects empty strings,
-    # signs, whitespace, and unicode-digit lookalikes (e.g. ``²``) that would
-    # otherwise crash ``int()``.
-    if not (tail.isascii() and tail.isdecimal()):
-        raise ValueError(
-            f"witness label {label!r} has a non-integer magnitude {tail!r}"
-        )
-    magnitude = int(tail)
-    if magnitude <= 0:
-        raise ValueError(
-            f"witness label {label!r} has a non-positive magnitude {tail!r}"
-        )
-    value, tier = mag
-    return ArgumentEvidence(
-        label=label, value=value, tier=tier, magnitude=magnitude
-    )
+    magnitude: int = 0
+    answered: "ArgumentEvidence | None" = None
+    tag: Any = None

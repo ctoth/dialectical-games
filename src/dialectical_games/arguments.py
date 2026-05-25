@@ -25,33 +25,29 @@ The graded layer **only ranks** — it never resurrects a crisply-eliminated
 move (its move-node set is a subset of the crisp survivors), and never
 overrides a FACT decision.
 
+Phase 5 chunk 1: every witness on a :class:`MoveProbe` is a typed
+:class:`ArgumentEvidence` (role / tier / magnitude / answered / tag); the
+builders dispatch on :class:`Role` and :class:`Tier` enums only. A
+``DEFENSE`` evidence's ``answered`` field is the EVIDENCE OBJECT it
+answers — identity-typed — and the builders match by ``id(ev.answered)``
+against the per-probe attacker map. No string parsing, no ``@``-keyed
+labels, no prefix dispatch anywhere.
+
 The crisp argument families (one Dung argument per row):
 
 * ``move:{move_id}`` — one per legal move. The thing being attacked.
-* ``obj:{move_id}:{label}`` — one per FACT-tier objection.
-* ``reply:{move_id}:{label}`` — one per FACT-tier reply attack.
-* ``defense:{move_id}:{label}`` — one per FACT-tier proven defense. Defeats
-  *only* the one objection / reply argument it is keyed to answer (the label
-  is keyed ``defense:...@{answered}``; the ``@{answered}`` part names the
-  exact objection / reply label the defense answers).
+* ``obj:{move_id}:{ev_id}`` — one per FACT-tier objection. ``ev_id`` is the
+  cartridge's ``tag`` when present, else the Python ``id(evidence)``.
+* ``reply:{move_id}:{ev_id}`` — one per FACT-tier reply attack.
+* ``defense:{move_id}:{ev_id}`` — one per FACT-tier proven defense. Defeats
+  *only* the one objection / reply argument its ``answered`` evidence
+  identifies on the same move.
 
 There is no ``doubt`` node — soft reasoning lives in the graded layer. There
 are no duplicated arguments — every argument id is distinct. HEURISTIC
 witnesses never enter the crisp layer; the construction filters by
-``evidence.to_argument_evidence(label).tier`` regardless, so a future
-HEURISTIC witness still cannot leak in.
-
-Each argument id carries the move's ``move_id`` so that objection / reply /
-defense ids are globally unique even when two moves carry an identically-
-labelled witness (e.g. two different moves both ``obj:terminal_loss``) —
-distinct ids, never a shared/duplicated argument.
-
-A ``move:`` argument is in the grounded extension iff no undefeated FACT-tier
-objection / reply attacks it. The **empty-survivor fallback**: if no
-``move:`` argument is in the grounded extension (every move carries an
-undefeated FACT objection), the surviving set is *all* moves — the engine
-must still return a move, and the cartridge selector then ranks by the
-magnitude of the unavoidable loss.
+``ev.tier is Tier.FACT`` for crisp and ``ev.tier is Tier.HEURISTIC`` for
+graded.
 
 The graded layer is parameterised by a cartridge-supplied
 :class:`GradedPolicy` — the only place game-specific tuning enters the
@@ -71,7 +67,7 @@ from typing import Any, Protocol, Sequence
 from argumentation.dung import ArgumentationFramework, grounded_extension
 from doxa import BipolarOpinionGraph, Opinion, evaluate
 
-from dialectical_games.evidence import to_argument_evidence
+from dialectical_games.evidence import ArgumentEvidence, Role
 from dialectical_games.scheme import Tier
 
 
@@ -80,8 +76,13 @@ class MoveProbe:
     """One AS1 argument for a legal move (design §5).
 
     Generic, cartridge-agnostic. ``move_id`` is the stable cartridge-supplied
-    move identifier (checkers' PDN, chess's UCI, ...); the other fields are
-    typed witness labels emitted by the cartridge probe layer.
+    move identifier (checkers' PDN, chess's UCI, ...); ``evidence`` is the
+    tuple of typed :class:`ArgumentEvidence` witnesses the cartridge probe
+    layer emitted for this move.
+
+    Phase 5 chunk 1: the four legacy string-tuple fields (``reasons`` /
+    ``objections`` / ``reply_attacks`` / ``defenses``) collapsed into one
+    typed ``evidence`` field. The builders partition by :attr:`Role`.
 
     ``child_eval`` and ``contested`` are **pre-computed cartridge-side** —
     they are the per-probe inputs the graded layer's policy reads. Pre-
@@ -107,10 +108,7 @@ class MoveProbe:
 
     move_id: str
     score: int = 0
-    reasons: tuple[str, ...] = ()
-    objections: tuple[str, ...] = ()
-    reply_attacks: tuple[str, ...] = ()
-    defenses: tuple[str, ...] = ()
+    evidence: tuple[ArgumentEvidence, ...] = ()
     search_score: int | None = None
     search_line: tuple[str, ...] = ()
     child_eval: int = 0
@@ -176,7 +174,7 @@ class GradedPolicy(Protocol):
     object bound to the root board (so position-level features such as the
     game phase can be cached once), then passes it into the builder. The
     policy reads what it needs from each :class:`MoveProbe` (``child_eval``,
-    ``contested``, the witness labels themselves).
+    ``contested``, the typed :class:`ArgumentEvidence` itself).
 
     The builder calls :meth:`with_probes` once at entry with the survivor
     probe sequence; a cartridge that needs per-position aggregates (a CDF
@@ -214,13 +212,12 @@ class GradedPolicy(Protocol):
         self,
         *,
         probe: MoveProbe,
-        label: str,
-        magnitude: int | None,
+        evidence: ArgumentEvidence,
     ) -> Opinion:
         """The intrinsic ``Opinion(b, d, u, a)`` of one HEURISTIC witness leaf.
 
-        Encodes the cartridge's belief band for ``label`` (and ``magnitude``,
-        when the witness carries one) plus any position-conditioned
+        Encodes the cartridge's belief band for ``evidence`` (its
+        ``role`` / ``magnitude`` / ``tag``) plus any position-conditioned
         uncertainty. The same opinion shape encodes a pro-reason and an
         objection — the graph's ``supports`` vs ``attacks`` edge decides the
         sign, so a witness opinion is always a positive belief in *the
@@ -243,68 +240,54 @@ def _move_arg(move_id: str) -> str:
     return f"move:{move_id}"
 
 
-def obj_arg_id(move_id: str, label: str) -> str:
-    """The objection argument id for FACT objection ``label`` on ``move_id``.
+def _evidence_id(evidence: ArgumentEvidence) -> str:
+    """A unique per-evidence id fragment for argument-id construction.
+
+    Always includes ``id(evidence)`` so two evidence objects with the
+    same cartridge ``tag`` on the same probe become distinct arguments
+    (no collisions in the Dung framework's argument set). When ``tag``
+    is set, it is concatenated as a diagnostic-friendly prefix; tests
+    and logs see the cartridge-supplied name as well as the uniqueness
+    suffix. The core never inspects the tag's structure; it only
+    stringifies it.
+    """
+    if evidence.tag is None:
+        return str(id(evidence))
+    return f"{evidence.tag}:{id(evidence)}"
+
+
+def obj_arg_id(move_id: str, evidence: ArgumentEvidence) -> str:
+    """The objection argument id for FACT objection ``evidence`` on ``move_id``.
 
     Public so a cartridge selector can reconstruct the same objection
     argument id and ask whether that attacker is in the grounded extension
     — i.e. still undefeated.
     """
-    return f"obj:{move_id}:{label}"
+    return f"obj:{move_id}:{_evidence_id(evidence)}"
 
 
-def reply_arg_id(move_id: str, label: str) -> str:
-    """The reply-attack argument id for FACT reply ``label`` on ``move_id``.
+def reply_arg_id(move_id: str, evidence: ArgumentEvidence) -> str:
+    """The reply-attack argument id for FACT reply ``evidence`` on ``move_id``.
 
     Public for the same reason as :func:`obj_arg_id`.
     """
-    return f"reply:{move_id}:{label}"
+    return f"reply:{move_id}:{_evidence_id(evidence)}"
 
 
-def _defense_arg(move_id: str, label: str) -> str:
-    """The defense argument id for FACT defense ``label`` on ``move_id``."""
-    return f"defense:{move_id}:{label}"
+def _defense_arg(move_id: str, evidence: ArgumentEvidence) -> str:
+    """The defense argument id for FACT defense ``evidence`` on ``move_id``."""
+    return f"defense:{move_id}:{_evidence_id(evidence)}"
 
 
-def _witness_arg_id(move_id: str, label: str) -> str:
-    """The graded-graph leaf-node id for HEURISTIC witness ``label``.
+def _witness_arg_id(move_id: str, evidence: ArgumentEvidence) -> str:
+    """The graded-graph leaf-node id for HEURISTIC witness ``evidence``.
 
     A ``wit:`` prefix (distinct from the crisp layer's ``obj:`` / ``reply:``
     / ``defense:`` families) so a graded witness node can never collide with
-    a crisp argument id. The move id is embedded so the same HEURISTIC label
+    a crisp argument id. The move id is embedded so the same HEURISTIC tag
     on two different moves gets two distinct leaf nodes.
     """
-    return f"wit:{move_id}:{label}"
-
-
-def _is_fact(label: str) -> bool:
-    """True iff ``label`` is a FACT-tier witness.
-
-    Parsed once through ``evidence.to_argument_evidence``: the single typed
-    taxonomy. A label the parser rejects is not a known FACT witness and is
-    excluded — the crisp layer never silently admits an untyped label.
-    """
-    try:
-        return to_argument_evidence(label).tier is Tier.FACT
-    except ValueError:
-        return False
-
-
-def _heuristic_evidence(label: str):  # noqa: ANN202 — ArgumentEvidence | None
-    """The parsed evidence for ``label`` iff it is HEURISTIC-tier, else None.
-
-    A label the evidence parser rejects, or one that types FACT, is not a
-    graded-layer witness and yields ``None`` — the graded layer never
-    silently admits an untyped or FACT label, exactly as the crisp layer
-    never does.
-    """
-    try:
-        evidence = to_argument_evidence(label)
-    except ValueError:
-        return None
-    if evidence.tier is not Tier.HEURISTIC:
-        return None
-    return evidence
+    return f"wit:{move_id}:{_evidence_id(evidence)}"
 
 
 def _build_graded_graph_internal(
@@ -347,60 +330,46 @@ def _build_graded_graph_internal(
         move_node_by_id[probe.move_id] = move_id
         arguments.add(move_id)
         intrinsic[move_id] = Opinion.vacuous(policy.move_base_rate(probe))
-        attacker_by_label: dict[str, str] = {}
 
-        for label in probe.reasons:
-            evidence = _heuristic_evidence(label)
-            if evidence is None:
+        # First pass: HEURISTIC pro / objection / reply-attack witnesses.
+        # Defenses come in a second pass so an answered attacker is always
+        # already in the per-probe attacker map by id(...) lookup.
+        attacker_by_evidence: dict[int, str] = {}
+        for ev in probe.evidence:
+            if ev.tier is not Tier.HEURISTIC:
                 continue
-            wit_id = _witness_arg_id(probe.move_id, label)
-            arguments.add(wit_id)
-            intrinsic[wit_id] = policy.witness_opinion(
-                probe=probe, label=label, magnitude=evidence.magnitude
-            )
-            edge = (wit_id, move_id)
-            supports.add(edge)
-            edge_opinions[edge] = edge_trust
+            if ev.role is Role.PRO:
+                wit_id = _witness_arg_id(probe.move_id, ev)
+                arguments.add(wit_id)
+                intrinsic[wit_id] = policy.witness_opinion(
+                    probe=probe, evidence=ev
+                )
+                edge = (wit_id, move_id)
+                supports.add(edge)
+                edge_opinions[edge] = edge_trust
+            elif ev.role is Role.OBJECTION or ev.role is Role.REPLY_ATTACK:
+                wit_id = _witness_arg_id(probe.move_id, ev)
+                arguments.add(wit_id)
+                intrinsic[wit_id] = policy.witness_opinion(
+                    probe=probe, evidence=ev
+                )
+                edge = (wit_id, move_id)
+                attacks.add(edge)
+                edge_opinions[edge] = edge_trust
+                attacker_by_evidence[id(ev)] = wit_id
 
-        for label in probe.objections:
-            evidence = _heuristic_evidence(label)
-            if evidence is None:
+        for ev in probe.evidence:
+            if ev.tier is not Tier.HEURISTIC or ev.role is not Role.DEFENSE:
                 continue
-            wit_id = _witness_arg_id(probe.move_id, label)
-            arguments.add(wit_id)
-            intrinsic[wit_id] = policy.witness_opinion(
-                probe=probe, label=label, magnitude=evidence.magnitude
-            )
-            edge = (wit_id, move_id)
-            attacks.add(edge)
-            edge_opinions[edge] = edge_trust
-            attacker_by_label[label] = wit_id
-
-        for label in probe.reply_attacks:
-            evidence = _heuristic_evidence(label)
-            if evidence is None:
+            if ev.answered is None:
                 continue
-            wit_id = _witness_arg_id(probe.move_id, label)
-            arguments.add(wit_id)
-            intrinsic[wit_id] = policy.witness_opinion(
-                probe=probe, label=label, magnitude=evidence.magnitude
-            )
-            edge = (wit_id, move_id)
-            attacks.add(edge)
-            edge_opinions[edge] = edge_trust
-            attacker_by_label[label] = wit_id
-
-        for label in probe.defenses:
-            evidence = _heuristic_evidence(label)
-            if evidence is None or evidence.answered is None:
-                continue
-            answered_wit_id = attacker_by_label.get(evidence.answered)
+            answered_wit_id = attacker_by_evidence.get(id(ev.answered))
             if answered_wit_id is None:
                 continue
-            wit_id = _witness_arg_id(probe.move_id, label)
+            wit_id = _witness_arg_id(probe.move_id, ev)
             arguments.add(wit_id)
             intrinsic[wit_id] = policy.witness_opinion(
-                probe=probe, label=label, magnitude=evidence.magnitude
+                probe=probe, evidence=ev
             )
             edge = (wit_id, answered_wit_id)
             attacks.add(edge)
@@ -431,7 +400,7 @@ def build_graded_graph(
     expectations use :func:`build_graded_layer`.
 
     Same structure as :func:`build_graded_layer`: one ``move:{move_id}``
-    node per surviving move, one ``wit:{move_id}:{label}`` leaf per
+    node per surviving move, one ``wit:{move_id}:{ev_id}`` leaf per
     HEURISTIC witness, support / attack edges keyed by edge-trust.
 
     Returns the empty :class:`BipolarOpinionGraph` when ``policy is None``
@@ -472,7 +441,7 @@ def build_graded_layer(
 
     Each surviving move becomes a ``move:{move_id}`` node with intrinsic
     ``Opinion.vacuous(policy.move_base_rate(probe))``. Each HEURISTIC
-    witness on a surviving move becomes a ``wit:{move_id}:{label}`` leaf
+    witness on a surviving move becomes a ``wit:{move_id}:{ev_id}`` leaf
     with the policy's ``witness_opinion(...)`` as intrinsic — support edge
     for a pro-reason, attack edge for an objection — every edge carrying
     ``policy.edge_trust``. ``doxa.evaluate`` resolves the graph; each
@@ -534,11 +503,9 @@ def build_root_argument_graph(
     * for every FACT-tier reply attack on the probe, a ``reply:`` argument
       that defeats the move;
     * for every FACT-tier defense on the probe, a ``defense:`` argument
-      that defeats only the one objection / reply argument it is keyed to
-      answer. The defense label is keyed ``defense:...@{answered}``; the
-      defense argument defeats the attacker built from ``{answered}`` on
-      the same move and nothing else. A keyed defense whose answered label
-      is not present among the move's FACT attackers defeats nothing.
+      that defeats only the one objection / reply argument its
+      :attr:`ArgumentEvidence.answered` identifies. A defense whose
+      answered evidence is not in the move's attacker set defeats nothing.
 
     No ``doubt`` argument, no duplicated arguments — every id is distinct.
     HEURISTIC witnesses are filtered out of the crisp layer. The grounded
@@ -562,28 +529,36 @@ def build_root_argument_graph(
         move_arguments[probe.move_id] = move_id
         arguments.add(move_id)
 
-        fact_objections = [o for o in probe.objections if _is_fact(o)]
-        fact_replies = [r for r in probe.reply_attacks if _is_fact(r)]
-        attacker_by_label: dict[str, str] = {}
-        for label in fact_objections:
-            arg_id = obj_arg_id(probe.move_id, label)
-            arguments.add(arg_id)
-            defeats.add((arg_id, move_id))
-            attacker_by_label[label] = arg_id
-        for label in fact_replies:
-            arg_id = reply_arg_id(probe.move_id, label)
-            arguments.add(arg_id)
-            defeats.add((arg_id, move_id))
-            attacker_by_label[label] = arg_id
-
-        for label in probe.defenses:
-            if not _is_fact(label):
+        # First pass: FACT attackers (objections + reply attacks). Each
+        # attacker registers under ``id(evidence)`` so a defense built in
+        # the same per-probe pass can locate it by identity.
+        attacker_by_evidence: dict[int, str] = {}
+        for ev in probe.evidence:
+            if ev.tier is not Tier.FACT:
                 continue
-            answered = to_argument_evidence(label).answered
-            arg_id = _defense_arg(probe.move_id, label)
+            if ev.role is Role.OBJECTION:
+                arg_id = obj_arg_id(probe.move_id, ev)
+                arguments.add(arg_id)
+                defeats.add((arg_id, move_id))
+                attacker_by_evidence[id(ev)] = arg_id
+            elif ev.role is Role.REPLY_ATTACK:
+                arg_id = reply_arg_id(probe.move_id, ev)
+                arguments.add(arg_id)
+                defeats.add((arg_id, move_id))
+                attacker_by_evidence[id(ev)] = arg_id
+
+        # Second pass: FACT defenses. ``answered`` is the EVIDENCE OBJECT
+        # the defense answers; identity-keyed lookup wires the defeat edge
+        # to the corresponding attacker argument.
+        for ev in probe.evidence:
+            if ev.tier is not Tier.FACT or ev.role is not Role.DEFENSE:
+                continue
+            arg_id = _defense_arg(probe.move_id, ev)
             arguments.add(arg_id)
-            if answered is not None and answered in attacker_by_label:
-                defeats.add((arg_id, attacker_by_label[answered]))
+            if ev.answered is not None:
+                target = attacker_by_evidence.get(id(ev.answered))
+                if target is not None:
+                    defeats.add((arg_id, target))
 
     framework = ArgumentationFramework(
         arguments=frozenset(arguments),

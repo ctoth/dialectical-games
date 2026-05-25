@@ -6,21 +6,18 @@ Three invariants the core decider must satisfy:
   returns the same probe regardless of input order. The key ends in
   ``probe.move_id``, so the ordering is total and deterministic.
 
-* **total ordering on FACT survivors** — two probes with the SAME FACT
-  key are distinguished only by the graded / tiebreak terms (so the
-  ordering of the pair is stable under permutation); two probes with
-  DIFFERENT FACT keys are decided strictly by FACT (so the better FACT
-  key always wins regardless of graded values).
+* **total ordering on FACT survivors** — the decider returns the SAME
+  probe object regardless of input order.
 
-* **fact_only_key lower-bound dominance** — for any pair ``p1``, ``p2``,
-  if ``fact_only_key(p1) < fact_only_key(p2)`` then
-  :func:`lexicographic_decide` over ``{p1, p2}`` always returns ``p1``.
-  This is the §7 fact-as-highest-value guarantee phrased as a pairwise
-  invariant on the primitive.
+* **fact_only_key lower-bound dominance** — if
+  ``fact_only_key(p1) < fact_only_key(p2)``, the decider over ``{p1, p2}``
+  always returns ``p1`` (the §7 fact-as-highest-value guarantee at the
+  pair level).
 
-All probes are drawn by ``hypothesis`` strategies — the FACT properties
-are exercised across the typed evidence taxonomy
-(``dialectical_games.evidence``).
+Phase 5 chunk 1: probes are built from typed
+:class:`~dialectical_games.evidence.ArgumentEvidence` directly. The
+strategies span all four :class:`Role` × both :class:`Tier` combinations
+across cartridge-agnostic magnitude ranges.
 """
 
 from __future__ import annotations
@@ -36,18 +33,22 @@ from dialectical_games.arguments import (
     MoveProbe,
     build_root_argument_graph,
 )
-from dialectical_games.decider import fact_only_key, lexicographic_decide
+from dialectical_games.decider import (
+    _TERMINAL_LOSS_MAGNITUDE,
+    fact_only_key,
+    lexicographic_decide,
+)
+from dialectical_games.evidence import ArgumentEvidence, Role
+from dialectical_games.scheme import Tier
 
 
 # ---------------------------------------------------------------------------
-# A stub policy reused from the unit tests — magnitude-insensitive HEURISTIC
-# witnesses, monotone base rate, dogmatic edge trust.
+# Stub policy
 # ---------------------------------------------------------------------------
 
 
 class _StubPolicy:
     def with_probes(self, probes: object) -> "_StubPolicy":
-        # Chunk H': no per-position aggregates; identity.
         return self
 
     @property
@@ -63,7 +64,7 @@ class _StubPolicy:
         return 0.50 - x * 0.003
 
     def witness_opinion(
-        self, *, probe: MoveProbe, label: str, magnitude: int | None
+        self, *, probe: MoveProbe, evidence: ArgumentEvidence
     ) -> Opinion:
         return Opinion(0.55, 0.15, 0.30, 0.5)
 
@@ -72,68 +73,118 @@ _POLICY: GradedPolicy = _StubPolicy()
 
 
 # ---------------------------------------------------------------------------
-# Probe strategies — drawn over the typed evidence labels the parser accepts.
+# Evidence strategies — game-agnostic, generic Role × Tier × magnitude
 # ---------------------------------------------------------------------------
 
-# A small spread of FACT pro / objection / reply / defense labels typed by
-# ``dialectical_games.evidence.to_argument_evidence``. Keeping the set small
-# means the strategies cover a wide range of FACT-key tuples in few samples.
-_FACT_PROS = (
-    "pro:terminal_win",
-    "pro:material:100",
-    "pro:material:300",
-    "pro:crown",
-)
-_FACT_OBJECTIONS = (
-    "obj:terminal_loss",
-    "obj:allows_shot:100",
-    "obj:allows_shot:300",
-)
-_FACT_REPLIES = (
-    "reply:terminal_loss",
-    "reply:material:100",
-    "reply:material:200",
-)
-# Defenses keyed to one of the reply labels above.
-_FACT_DEFENSES = (
-    "defense:holds_exchange@reply:material:100",
-    "defense:holds_exchange@reply:material:200",
-)
-# A small HEURISTIC vocabulary the evidence parser recognises.
-_HEURISTIC_PROS = ("pro:opposition", "pro:back_rank_hold")
-_HEURISTIC_OBJECTIONS = ("obj:loses_opposition",)
+
+# A small spread of cartridge-style magnitudes. The terminal-loss sentinel
+# appears explicitly so the strategies exercise the "winning" boundary.
+_FINITE_MAGNITUDES = st.sampled_from((50, 100, 200, 300))
+_FACT_MAGNITUDES = st.one_of(_FINITE_MAGNITUDES, st.just(_TERMINAL_LOSS_MAGNITUDE))
+_TAGS = st.sampled_from(("a", "b", "c", "d", "e", "f"))
 
 
-def _label_subset(labels: tuple[str, ...]) -> st.SearchStrategy[tuple[str, ...]]:
-    """Draw an ordered subset (no duplicates) from ``labels``."""
-    return st.lists(
-        st.sampled_from(labels), max_size=len(labels), unique=True
-    ).map(tuple)
+def _fact_pro_strategy() -> st.SearchStrategy[ArgumentEvidence]:
+    return st.builds(
+        ArgumentEvidence,
+        role=st.just(Role.PRO),
+        tier=st.just(Tier.FACT),
+        magnitude=_FACT_MAGNITUDES,
+        answered=st.none(),
+        tag=_TAGS,
+    )
+
+
+def _fact_objection_strategy() -> st.SearchStrategy[ArgumentEvidence]:
+    return st.builds(
+        ArgumentEvidence,
+        role=st.just(Role.OBJECTION),
+        tier=st.just(Tier.FACT),
+        magnitude=_FACT_MAGNITUDES,
+        answered=st.none(),
+        tag=_TAGS,
+    )
+
+
+def _fact_reply_strategy() -> st.SearchStrategy[ArgumentEvidence]:
+    return st.builds(
+        ArgumentEvidence,
+        role=st.just(Role.REPLY_ATTACK),
+        tier=st.just(Tier.FACT),
+        magnitude=_FACT_MAGNITUDES,
+        answered=st.none(),
+        tag=_TAGS,
+    )
+
+
+def _heuristic_pro_strategy() -> st.SearchStrategy[ArgumentEvidence]:
+    return st.builds(
+        ArgumentEvidence,
+        role=st.just(Role.PRO),
+        tier=st.just(Tier.HEURISTIC),
+        magnitude=st.integers(min_value=0, max_value=10),
+        answered=st.none(),
+        tag=_TAGS,
+    )
+
+
+def _heuristic_objection_strategy() -> st.SearchStrategy[ArgumentEvidence]:
+    return st.builds(
+        ArgumentEvidence,
+        role=st.just(Role.OBJECTION),
+        tier=st.just(Tier.HEURISTIC),
+        magnitude=st.integers(min_value=0, max_value=10),
+        answered=st.none(),
+        tag=_TAGS,
+    )
 
 
 @st.composite
-def _probes(draw: st.DrawFn, move_id: str) -> MoveProbe:
-    reasons = draw(_label_subset(_FACT_PROS + _HEURISTIC_PROS))
-    objections = draw(_label_subset(_FACT_OBJECTIONS + _HEURISTIC_OBJECTIONS))
-    reply_attacks = draw(_label_subset(_FACT_REPLIES))
-    defenses = draw(_label_subset(_FACT_DEFENSES))
-    child_eval = draw(st.integers(min_value=-500, max_value=500))
-    contested = draw(st.booleans())
+def _evidence_tuple(draw: st.DrawFn) -> tuple[ArgumentEvidence, ...]:
+    """Draw a small tuple of evidence + optionally a FACT defense whose
+    ``answered`` is one of the FACT attackers on the same probe.
+
+    Uses object identity for the defense's ``answered`` (the same evidence
+    object selected from the tuple) to exercise the identity-keyed defeat
+    edge in the builder.
+    """
+    pros = draw(st.lists(_fact_pro_strategy(), max_size=2))
+    objs = draw(st.lists(_fact_objection_strategy(), max_size=2))
+    replies = draw(st.lists(_fact_reply_strategy(), max_size=2))
+    h_pros = draw(st.lists(_heuristic_pro_strategy(), max_size=2))
+    h_objs = draw(st.lists(_heuristic_objection_strategy(), max_size=1))
+
+    attackers = objs + replies
+    defenses: list[ArgumentEvidence] = []
+    if attackers and draw(st.booleans()):
+        target = draw(st.sampled_from(attackers))
+        defenses.append(
+            ArgumentEvidence(
+                role=Role.DEFENSE,
+                tier=Tier.FACT,
+                magnitude=draw(_FINITE_MAGNITUDES),
+                answered=target,
+                tag=draw(_TAGS),
+            )
+        )
+
+    return tuple(pros + objs + replies + h_pros + h_objs + defenses)
+
+
+@st.composite
+def _probe(draw: st.DrawFn, move_id: str) -> MoveProbe:
     return MoveProbe(
         move_id=move_id,
-        reasons=reasons,
-        objections=objections,
-        reply_attacks=reply_attacks,
-        defenses=defenses,
-        child_eval=child_eval,
-        contested=contested,
+        evidence=draw(_evidence_tuple()),
+        child_eval=draw(st.integers(min_value=-500, max_value=500)),
+        contested=draw(st.booleans()),
     )
 
 
 @st.composite
 def _probe_set(draw: st.DrawFn) -> list[MoveProbe]:
     n = draw(st.integers(min_value=1, max_value=6))
-    return [draw(_probes(f"m{i}")) for i in range(n)]
+    return [draw(_probe(f"m{i}")) for i in range(n)]
 
 
 # ---------------------------------------------------------------------------
@@ -147,12 +198,7 @@ def _probe_set(draw: st.DrawFn) -> list[MoveProbe]:
 def test_decider_idempotent_under_permutation(
     probes: list[MoveProbe], seed: int
 ) -> None:
-    """The decider returns the same move regardless of probe input order.
-
-    Two calls on the same probe set, the second on a permutation, must
-    agree — the key terminates in ``probe.move_id`` so the ordering is a
-    total function of the probe set.
-    """
+    """The decider returns the same move regardless of probe input order."""
     graph = build_root_argument_graph(probes, _POLICY)
     first = lexicographic_decide(probes, graph)
     permuted = probes[:]
@@ -174,13 +220,7 @@ def test_decider_idempotent_under_permutation(
 def test_decider_total_ordering_under_permutation(
     probes: list[MoveProbe], seed: int
 ) -> None:
-    """The decider's chosen move is invariant under any probe permutation.
-
-    A stronger statement than idempotence: not only do the two calls agree
-    on which probe was chosen, the chosen probe is the SAME object — the
-    decider is a true total ordering, not merely a stable selection of
-    *some* maximum.
-    """
+    """The decider's chosen move is INVARIANT (identity) under permutation."""
     graph = build_root_argument_graph(probes, _POLICY)
     first = lexicographic_decide(probes, graph)
     permuted = probes[:]
@@ -201,24 +241,13 @@ def test_decider_total_ordering_under_permutation(
 @pytest.mark.property
 @settings(max_examples=200, deadline=None)
 @given(
-    p1=_probes("m1"),
-    p2=_probes("m2"),
+    p1=_probe("m1"),
+    p2=_probe("m2"),
 )
 def test_strict_fact_key_winner_always_chosen(
     p1: MoveProbe, p2: MoveProbe
 ) -> None:
-    """If ``fact_only_key(p1) < fact_only_key(p2)``, the decider picks ``p1``.
-
-    The §7 fact-as-highest-value guarantee at the pair level: a strictly
-    better FACT key dominates any graded outcome. Skips pairs whose FACT
-    keys tie (the graded layer is then *meant* to break the tie — not a
-    FACT-decided pair).
-
-    Restricted to pairs where BOTH probes survive the crisp layer (so the
-    decider's candidate set is the same as the input set). With one
-    eliminated probe the survivor wins trivially, which still satisfies
-    the guarantee but does not exercise the FACT-tier ordering.
-    """
+    """If ``fact_only_key(p1) < fact_only_key(p2)``, the decider picks ``p1``."""
     probes = [p1, p2]
     graph = build_root_argument_graph(probes, _POLICY)
     survivors = graph.survivors
@@ -237,3 +266,49 @@ def test_strict_fact_key_winner_always_chosen(
         chosen.move_id,
         worse.move_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Property: terminal-magnitude FACT pro outranks any finite FACT pro
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.property
+@settings(max_examples=100, deadline=None)
+@given(finite_mag=_FINITE_MAGNITUDES)
+def test_property_terminal_pro_dominates_any_finite_pro(
+    finite_mag: int,
+) -> None:
+    """A terminal-magnitude FACT pro on one move ALWAYS beats any
+    finite-magnitude FACT pro on a sibling.
+
+    The §7 fact-as-highest-value property phrased as a magnitude
+    invariant: the cartridge's "winning fact" convention
+    (magnitude = ``_TERMINAL_LOSS_MAGNITUDE``) is strictly dominant.
+    """
+    winning = MoveProbe(
+        move_id="w",
+        evidence=(
+            ArgumentEvidence(
+                role=Role.PRO,
+                tier=Tier.FACT,
+                magnitude=_TERMINAL_LOSS_MAGNITUDE,
+                tag="winning",
+            ),
+        ),
+    )
+    finite = MoveProbe(
+        move_id="f",
+        evidence=(
+            ArgumentEvidence(
+                role=Role.PRO,
+                tier=Tier.FACT,
+                magnitude=finite_mag,
+                tag="finite",
+            ),
+        ),
+    )
+    graph = build_root_argument_graph([winning, finite], _POLICY)
+    chosen = lexicographic_decide([winning, finite], graph)
+    assert chosen is not None
+    assert chosen.move_id == "w"

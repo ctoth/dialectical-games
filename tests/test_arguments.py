@@ -7,14 +7,13 @@ These tests verify the **generic** mechanics of
   extension correctly, and applies the empty-survivor fallback;
 * the graded layer is opinion-valued, uses the policy's three quantities only,
   and never resurrects a crisply-eliminated move;
-* FACT-tier evidence labels typed by ``dialectical_games.evidence`` are
-  recognised in both layers.
+* every FACT / HEURISTIC dispatch is enum-typed
+  (``ArgumentEvidence.role`` × ``ArgumentEvidence.tier``); no string parse.
 
-Cartridge-specific witness rules (the checkers FACT taxonomy is part of
-``dialectical_games.evidence``; the HEURISTIC labels in this file are typed by
-that same parser when they parse as one of its enrichment witnesses) live
-cartridge-side. Here a single stub policy stands in for any cartridge's
-:class:`GradedPolicy`.
+Phase 5 chunk 1: probes carry a typed
+:class:`~dialectical_games.evidence.ArgumentEvidence` tuple. No game-specific
+labels appear here — every test builds its evidence from the core
+:class:`Role` × :class:`Tier` enums directly.
 """
 
 from __future__ import annotations
@@ -31,19 +30,19 @@ from dialectical_games.arguments import (
     obj_arg_id,
     reply_arg_id,
 )
+from dialectical_games.evidence import ArgumentEvidence, Role
+from dialectical_games.scheme import Tier
+
+
+# ---------------------------------------------------------------------------
+# Stub policy
+# ---------------------------------------------------------------------------
 
 
 class _StubPolicy:
-    """A minimal :class:`GradedPolicy` for the generic tests.
-
-    Yields a centred base rate that responds monotonically to
-    ``probe.child_eval`` (smaller-is-better-for-the-mover convention),
-    a fixed-belief witness opinion, and constant dogmatic edge trust.
-    """
+    """A minimal :class:`GradedPolicy` for the generic tests."""
 
     def with_probes(self, probes: object) -> "_StubPolicy":
-        # Chunk H': no per-position aggregates; identity. ``probes`` is
-        # ignored — the stub has no cache to build.
         return self
 
     @property
@@ -51,7 +50,6 @@ class _StubPolicy:
         return Opinion.dogmatic_true(0.5)
 
     def move_base_rate(self, probe: MoveProbe) -> float:
-        # Smaller ``child_eval`` -> larger ``a``. A small, monotone form.
         x = probe.child_eval
         if x <= -100:
             return 0.80
@@ -60,15 +58,59 @@ class _StubPolicy:
         return 0.50 - x * 0.003
 
     def witness_opinion(
-        self, *, probe: MoveProbe, label: str, magnitude: int | None
+        self, *, probe: MoveProbe, evidence: ArgumentEvidence
     ) -> Opinion:
-        # A fixed-band HEURISTIC witness: belief 0.55, uncertainty 0.30,
-        # disbelief 0.15. ``magnitude`` is ignored — the generic tests
-        # exercise the topology, not magnitude scaling.
         return Opinion(0.55, 0.15, 0.30, 0.5)
 
 
 _POLICY: GradedPolicy = _StubPolicy()
+
+
+# ---------------------------------------------------------------------------
+# Construction helpers (game-agnostic fixtures)
+# ---------------------------------------------------------------------------
+
+
+def _heuristic_pro(tag: str = "pro-h") -> ArgumentEvidence:
+    return ArgumentEvidence(role=Role.PRO, tier=Tier.HEURISTIC, tag=tag)
+
+
+def _heuristic_objection(tag: str = "obj-h") -> ArgumentEvidence:
+    return ArgumentEvidence(role=Role.OBJECTION, tier=Tier.HEURISTIC, tag=tag)
+
+
+def _fact_pro(magnitude: int, tag: str = "pro-f") -> ArgumentEvidence:
+    return ArgumentEvidence(
+        role=Role.PRO, tier=Tier.FACT, magnitude=magnitude, tag=tag
+    )
+
+
+def _fact_objection(magnitude: int, tag: str = "obj-f") -> ArgumentEvidence:
+    return ArgumentEvidence(
+        role=Role.OBJECTION, tier=Tier.FACT, magnitude=magnitude, tag=tag
+    )
+
+
+def _fact_reply(magnitude: int, tag: str = "rep-f") -> ArgumentEvidence:
+    return ArgumentEvidence(
+        role=Role.REPLY_ATTACK, tier=Tier.FACT, magnitude=magnitude, tag=tag
+    )
+
+
+def _fact_defense(
+    answered: ArgumentEvidence, tag: str = "def-f"
+) -> ArgumentEvidence:
+    return ArgumentEvidence(
+        role=Role.DEFENSE, tier=Tier.FACT, answered=answered, tag=tag
+    )
+
+
+def _heuristic_defense(
+    answered: ArgumentEvidence, tag: str = "def-h"
+) -> ArgumentEvidence:
+    return ArgumentEvidence(
+        role=Role.DEFENSE, tier=Tier.HEURISTIC, answered=answered, tag=tag
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +120,7 @@ _POLICY: GradedPolicy = _StubPolicy()
 
 def test_clean_move_is_in_grounded_extension() -> None:
     """A move with no FACT objection survives the crisp layer."""
-    probes = [MoveProbe(move_id="m1", reasons=("pro:crown",))]
+    probes = [MoveProbe(move_id="m1", evidence=(_fact_pro(0, tag="crown"),))]
     graph = build_root_argument_graph(probes, _POLICY)
     move_id = graph.move_arguments["m1"]
     assert move_id in graph.grounded_extension
@@ -87,7 +129,12 @@ def test_clean_move_is_in_grounded_extension() -> None:
 
 def test_undefeated_fact_objection_eliminates_move() -> None:
     """A move with an undefeated FACT objection is NOT in the grounded extension."""
-    probes = [MoveProbe(move_id="m1", objections=("obj:terminal_loss",))]
+    probes = [
+        MoveProbe(
+            move_id="m1",
+            evidence=(_fact_objection(0, tag="terminal_loss"),),
+        )
+    ]
     graph = build_root_argument_graph(probes, _POLICY)
     move_id = graph.move_arguments["m1"]
     assert move_id not in graph.grounded_extension
@@ -96,14 +143,11 @@ def test_undefeated_fact_objection_eliminates_move() -> None:
 
 
 def test_keyed_defense_restores_move() -> None:
-    """A keyed FACT defense defeats only the objection it answers, restoring the move."""
-    probes = [
-        MoveProbe(
-            move_id="m1",
-            reply_attacks=("reply:material:200",),
-            defenses=("defense:holds_exchange@reply:material:200",),
-        )
-    ]
+    """A FACT defense referencing the reply EVIDENCE OBJECT defeats only
+    that reply and restores the move."""
+    reply = _fact_reply(200, tag="material:200")
+    defense = _fact_defense(answered=reply, tag="holds_exchange")
+    probes = [MoveProbe(move_id="m1", evidence=(reply, defense))]
     graph = build_root_argument_graph(probes, _POLICY)
     move_id = graph.move_arguments["m1"]
     assert move_id in graph.grounded_extension
@@ -111,14 +155,16 @@ def test_keyed_defense_restores_move() -> None:
 
 
 def test_empty_survivor_fallback_returns_all_moves() -> None:
-    """When every move carries an undefeated FACT objection, all moves survive.
-
-    The cartridge selector then ranks by the magnitude of the unavoidable
-    loss — the core only guarantees that survivors is non-empty.
-    """
+    """When every move carries an undefeated FACT objection, all moves survive."""
     probes = [
-        MoveProbe(move_id="m1", objections=("obj:terminal_loss",)),
-        MoveProbe(move_id="m2", objections=("obj:terminal_loss",)),
+        MoveProbe(
+            move_id="m1",
+            evidence=(_fact_objection(0, tag="terminal_loss"),),
+        ),
+        MoveProbe(
+            move_id="m2",
+            evidence=(_fact_objection(0, tag="terminal_loss"),),
+        ),
     ]
     graph = build_root_argument_graph(probes, _POLICY)
     assert graph.survivors == frozenset({"m1", "m2"})
@@ -126,31 +172,33 @@ def test_empty_survivor_fallback_returns_all_moves() -> None:
 
 def test_no_duplicated_arguments() -> None:
     """Every argument id is distinct — no copy / duplicate arguments."""
+    objection = _fact_objection(0, tag="terminal_loss-obj")
+    reply = _fact_reply(0, tag="terminal_loss-rep")
     probes = [
-        MoveProbe(
-            move_id="m1",
-            objections=("obj:terminal_loss",),
-            reply_attacks=("reply:terminal_loss",),
-        )
+        MoveProbe(move_id="m1", evidence=(objection, reply)),
     ]
     graph = build_root_argument_graph(probes, _POLICY)
-    # No two arguments share an id.
     assert len(graph.arguments) == len({a for a in graph.arguments})
-    assert obj_arg_id("m1", "obj:terminal_loss") in graph.arguments
-    assert reply_arg_id("m1", "reply:terminal_loss") in graph.arguments
+    assert obj_arg_id("m1", objection) in graph.arguments
+    assert reply_arg_id("m1", reply) in graph.arguments
 
 
 def test_heuristic_objection_does_not_eliminate() -> None:
     """A HEURISTIC objection cannot defeat the move in the crisp layer."""
-    probes = [MoveProbe(move_id="m1", objections=("obj:exposes_man",))]
+    probes = [
+        MoveProbe(
+            move_id="m1",
+            evidence=(_heuristic_objection(tag="exposes_man"),),
+        )
+    ]
     graph = build_root_argument_graph(probes, _POLICY)
     move_id = graph.move_arguments["m1"]
     assert move_id in graph.grounded_extension
 
 
-def test_unknown_label_is_silently_excluded() -> None:
-    """A label the evidence parser rejects is ignored by the crisp layer."""
-    probes = [MoveProbe(move_id="m1", objections=("garbled:not_a_label",))]
+def test_empty_evidence_keeps_move_grounded() -> None:
+    """A probe with no evidence at all is grounded (no attacker, no pro)."""
+    probes = [MoveProbe(move_id="m1")]
     graph = build_root_argument_graph(probes, _POLICY)
     move_id = graph.move_arguments["m1"]
     assert move_id in graph.grounded_extension
@@ -175,7 +223,13 @@ def test_graded_layer_supports_lifts_expectation() -> None:
         [MoveProbe(move_id="m1", child_eval=0)], _POLICY
     )
     supported = build_root_argument_graph(
-        [MoveProbe(move_id="m1", child_eval=0, reasons=("pro:opposition",))],
+        [
+            MoveProbe(
+                move_id="m1",
+                child_eval=0,
+                evidence=(_heuristic_pro(tag="opposition"),),
+            )
+        ],
         _POLICY,
     )
     assert (
@@ -192,7 +246,9 @@ def test_graded_layer_attacks_lower_expectation() -> None:
     attacked = build_root_argument_graph(
         [
             MoveProbe(
-                move_id="m1", child_eval=0, objections=("obj:exposes_man",)
+                move_id="m1",
+                child_eval=0,
+                evidence=(_heuristic_objection(tag="exposes_man"),),
             )
         ],
         _POLICY,
@@ -205,19 +261,20 @@ def test_graded_layer_attacks_lower_expectation() -> None:
 
 def test_graded_heuristic_defense_attacks_answered_objection_witness() -> None:
     """A HEURISTIC defense suppresses its answered objection inside the graph."""
+    from dialectical_games.arguments import _witness_arg_id
+
+    objection = _heuristic_objection(tag="exposes_man")
+    defense = _heuristic_defense(answered=objection, tag="suppression")
     graph = build_root_argument_graph(
         [
             MoveProbe(
-                move_id="m1",
-                child_eval=0,
-                objections=("obj:exposes_man",),
-                defenses=("defense:heuristic_suppression@obj:exposes_man",),
+                move_id="m1", child_eval=0, evidence=(objection, defense)
             )
         ],
         _POLICY,
     )
-    defense_witness = "wit:m1:defense:heuristic_suppression@obj:exposes_man"
-    objection_witness = "wit:m1:obj:exposes_man"
+    defense_witness = _witness_arg_id("m1", defense)
+    objection_witness = _witness_arg_id("m1", objection)
     move_node = "move:m1"
 
     assert (defense_witness, objection_witness) in graph.ranking["attacks"]
@@ -233,25 +290,34 @@ def test_graded_heuristic_defense_restores_toward_baseline_without_boost() -> No
     attacked = build_root_argument_graph(
         [
             MoveProbe(
-                move_id="m1", child_eval=0, objections=("obj:exposes_man",)
+                move_id="m1",
+                child_eval=0,
+                evidence=(_heuristic_objection(tag="exposes_man"),),
             )
         ],
         _POLICY,
     )
+    objection = _heuristic_objection(tag="exposes_man")
+    defense = _heuristic_defense(answered=objection, tag="suppression")
     defended = build_root_argument_graph(
         [
             MoveProbe(
                 move_id="m1",
                 child_eval=0,
-                objections=("obj:exposes_man",),
-                defenses=("defense:heuristic_suppression@obj:exposes_man",),
+                evidence=(objection, defense),
             )
         ],
         _POLICY,
     )
 
-    assert defended.ranking["move_scores"]["m1"] > attacked.ranking["move_scores"]["m1"]
-    assert defended.ranking["move_scores"]["m1"] <= bland.ranking["move_scores"]["m1"]
+    assert (
+        defended.ranking["move_scores"]["m1"]
+        > attacked.ranking["move_scores"]["m1"]
+    )
+    assert (
+        defended.ranking["move_scores"]["m1"]
+        <= bland.ranking["move_scores"]["m1"]
+    )
 
 
 def test_graded_layer_subset_of_survivors() -> None:
@@ -260,7 +326,7 @@ def test_graded_layer_subset_of_survivors() -> None:
         MoveProbe(move_id="m1"),
         MoveProbe(
             move_id="m2",
-            objections=("obj:terminal_loss",),  # FACT, eliminates m2
+            evidence=(_fact_objection(0, tag="terminal_loss"),),
         ),
     ]
     graph = build_root_argument_graph(probes, _POLICY)
@@ -285,7 +351,11 @@ def test_graded_layer_none_policy_yields_empty_layer() -> None:
     The crisp layer still runs unchanged — only the graded ranking is
     suppressed.
     """
-    probes = [MoveProbe(move_id="m1", reasons=("pro:opposition",))]
+    probes = [
+        MoveProbe(
+            move_id="m1", evidence=(_heuristic_pro(tag="opposition"),)
+        )
+    ]
     graph = build_root_argument_graph(probes, None)
     assert "m1" in graph.survivors
     assert graph.ranking["move_scores"] == {}
@@ -316,26 +386,25 @@ def test_move_probe_new_fields_default_to_zero_and_false() -> None:
     assert probe.contested is False
 
 
+def test_move_probe_evidence_defaults_to_empty_tuple() -> None:
+    """The single ``evidence`` field replaces the four legacy fields."""
+    probe = MoveProbe(move_id="m1")
+    assert probe.evidence == ()
+
+
 # ---------------------------------------------------------------------------
 # Chunk H': GradedPolicy.with_probes
 # ---------------------------------------------------------------------------
 
 
 def test_with_probes_default_returns_equivalent_policy() -> None:
-    """A policy with no per-position aggregate to build returns an
-    equivalent :class:`GradedPolicy` from :meth:`with_probes`.
-
-    The stub policy has no cache to build, so ``with_probes`` is the
-    identity. The returned object must still satisfy the Protocol.
-    """
+    """A policy with no per-position aggregate returns an equivalent policy."""
     probes = (MoveProbe(move_id="m1", child_eval=0),)
     bound = _POLICY.with_probes(probes)
-    # Same protocol surface — every method/property still callable.
     assert bound.edge_trust == _POLICY.edge_trust
     assert bound.move_base_rate(probes[0]) == _POLICY.move_base_rate(probes[0])
-    op = bound.witness_opinion(
-        probe=probes[0], label="pro:material:100", magnitude=100
-    )
+    sample_ev = _heuristic_pro(tag="sample")
+    op = bound.witness_opinion(probe=probes[0], evidence=sample_ev)
     assert op.b + op.d + op.u == 1.0
 
 
@@ -359,18 +428,23 @@ def test_with_probes_called_by_builder_once_at_entry() -> None:
             return 0.5
 
         def witness_opinion(
-            self, *, probe: MoveProbe, label: str, magnitude: int | None
+            self, *, probe: MoveProbe, evidence: ArgumentEvidence
         ) -> Opinion:
             return Opinion(0.55, 0.15, 0.30, 0.5)
 
     policy = _CountingPolicy()
     probes = [
-        MoveProbe(move_id="m1", reasons=("pro:material:100",)),
-        MoveProbe(move_id="m2", reasons=("pro:material:200",)),
+        MoveProbe(
+            move_id="m1",
+            evidence=(_fact_pro(100, tag="material:100"),),
+        ),
+        MoveProbe(
+            move_id="m2",
+            evidence=(_fact_pro(200, tag="material:200"),),
+        ),
     ]
     build_graded_layer(probes, frozenset({"m1", "m2"}), policy)
     assert len(policy.with_probes_calls) == 1
-    # Survivor probes only — both moves survive in this fixture.
     assert {p.move_id for p in policy.with_probes_calls[0]} == {"m1", "m2"}
 
 
@@ -378,11 +452,10 @@ def test_with_probes_return_type_satisfies_protocol() -> None:
     """The object ``with_probes`` returns has the full Protocol surface."""
     probes: tuple[MoveProbe, ...] = (MoveProbe(move_id="m1"),)
     bound: GradedPolicy = _POLICY.with_probes(probes)
-    # All three Protocol entrypoints are callable on the return value.
     assert isinstance(bound.edge_trust, Opinion)
     assert 0.0 < bound.move_base_rate(probes[0]) < 1.0
     op = bound.witness_opinion(
-        probe=probes[0], label="pro:material:100", magnitude=100
+        probe=probes[0], evidence=_heuristic_pro(tag="sample")
     )
     assert isinstance(op, Opinion)
 
@@ -410,25 +483,14 @@ def test_with_probes_return_satisfies_protocol_property(
     probes: list[MoveProbe],
 ) -> None:
     """For any probe sequence, the policy returned by ``with_probes`` has
-    the full ``GradedPolicy`` Protocol surface (Codex chunk-H' MINOR).
-
-    The Protocol contract is: ``with_probes(probes)`` returns an object on
-    which (a) ``edge_trust`` is a ``doxa.Opinion``, (b) ``move_base_rate``
-    is callable and returns a value strictly in the open unit interval
-    (the doxa non-dogmatic precondition), and (c) ``witness_opinion`` is
-    callable and returns an ``Opinion`` whose Jøsang components sum to 1.
-    Any stub-equivalent policy must satisfy this for every probe sequence.
-    """
+    the full ``GradedPolicy`` Protocol surface."""
     bound: GradedPolicy = _POLICY.with_probes(tuple(probes))
     assert isinstance(bound.edge_trust, Opinion)
-    # `move_base_rate` and `witness_opinion` need a probe to read; pick one
-    # if available, otherwise synthesise.
     sample_probe = probes[0] if probes else MoveProbe(move_id="sample")
     rate = bound.move_base_rate(sample_probe)
     assert 0.0 < rate < 1.0
     op = bound.witness_opinion(
-        probe=sample_probe, label="pro:material:100", magnitude=100
+        probe=sample_probe, evidence=_heuristic_pro(tag="sample")
     )
     assert isinstance(op, Opinion)
-    # Jøsang invariant on the returned opinion.
     assert abs((op.b + op.d + op.u) - 1.0) < 1e-9

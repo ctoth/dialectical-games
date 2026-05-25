@@ -2,15 +2,21 @@
 
 Extracted from ``dialectical-checkers`` and ``dialectical-chess``. A game built
 on this core supplies a thin cartridge (board substrate, move generation,
-witness producers, value vocabulary, search backend, protocol harness); this
-package supplies the argumentation machinery.
+witness producers, evidence vocabulary, search backend, protocol harness);
+this package supplies the argumentation machinery.
 
-Phase 2 surface:
-- Foundational typed-evidence taxonomy — :class:`~dialectical_games.scheme.Tier`,
-  :class:`~dialectical_games.scheme.Value`,
+Phase 5 chunk 1: the core knows NOTHING about chess, checkers, or Othello.
+The witness label parser is gone; cartridges construct typed
+:class:`~dialectical_games.evidence.ArgumentEvidence` directly per witness
+and attach the tuple to :attr:`~dialectical_games.arguments.MoveProbe.evidence`.
+Every builder / decider dispatch is enum-typed (``Role`` × ``Tier``).
+
+Surface:
+
+- Typed evidence — :class:`~dialectical_games.scheme.Tier`,
   :class:`~dialectical_games.scheme.CriticalQuestion`,
-  :class:`~dialectical_games.evidence.ArgumentEvidence`,
-  :func:`~dialectical_games.evidence.to_argument_evidence`.
+  :class:`~dialectical_games.evidence.Role`,
+  :class:`~dialectical_games.evidence.ArgumentEvidence`.
 - Loss-mining diagnostic — :class:`~dialectical_games.board.Board`,
   :class:`~dialectical_games.board.Move`,
   :class:`~dialectical_games.game_result.GameResult`,
@@ -49,10 +55,7 @@ from dialectical_games.engine import (
     ReDecide,
     analyze,
 )
-from dialectical_games.evidence import (
-    ArgumentEvidence,
-    to_argument_evidence,
-)
+from dialectical_games.evidence import ArgumentEvidence, Role
 from dialectical_games.forced_loss import ForcedLoss, ForcedLossResolver
 from dialectical_games.game_result import GameResult
 from dialectical_games.loss_mining import (
@@ -60,7 +63,7 @@ from dialectical_games.loss_mining import (
     mine_losses,
     mine_turning_point,
 )
-from dialectical_games.scheme import CriticalQuestion, Tier, Value
+from dialectical_games.scheme import CriticalQuestion, Tier
 from dialectical_games.search_backend import (
     SearchBackend,
     SearchBackendRegistry,
@@ -85,11 +88,11 @@ __all__ = [
     "PostDecisionHook",
     "PostDecisionResult",
     "ReDecide",
+    "Role",
     "RootArgumentGraph",
     "SearchBackend",
     "SearchBackendRegistry",
     "Tier",
-    "Value",
     "analyze",
     "build_graded_layer",
     "build_root_argument_graph",
@@ -97,5 +100,4 @@ __all__ = [
     "mine_turning_point",
     "obj_arg_id",
     "reply_arg_id",
-    "to_argument_evidence",
 ]
